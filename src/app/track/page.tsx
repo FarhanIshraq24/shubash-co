@@ -88,7 +88,7 @@ export default async function TrackOrderPage({ searchParams }: TrackPageProps) {
 
   return (
     <div className="min-h-screen flex flex-col bg-[var(--background)]">
-      <Header customerName={currentUser?.name || null} />
+      <Header customerName={(currentUser?.type === "customer" ? currentUser.name : null)} />
 
       <main className="flex-1 max-w-4xl mx-auto px-4 sm:px-6 lg:px-8 py-10 w-full">
         <div className="pb-6 mb-6 border-b border-[var(--border-subtle)] text-center">

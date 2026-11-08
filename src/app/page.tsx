@@ -50,7 +50,7 @@ export default async function HomePage() {
       {/* Header */}
       <Header
         cartItemCount={0}
-        customerName={currentUser?.name || null}
+        customerName={(currentUser?.type === "customer" ? currentUser.name : null)}
       />
 
       <main className="flex-1">

@@ -79,7 +79,7 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
 
   return (
     <div className="min-h-screen flex flex-col bg-[var(--background)]">
-      <Header customerName={currentUser?.name || null} />
+      <Header customerName={(currentUser?.type === "customer" ? currentUser.name : null)} />
 
       <main className="flex-1 max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 py-8 w-full">
         {/* Page Header Banner */}

@@ -15,7 +15,7 @@ import {
   TableHead,
   TableCell,
 } from "@/components/ui/table";
-import { Package, ExternalLink } from "lucide-react";
+import { Package, ExternalLink, Plus, Pencil } from "lucide-react";
 import Decimal from "decimal.js";
 import { Prisma } from "@prisma/client";
 
@@ -85,6 +85,7 @@ export default async function AdminProductsPage() {
       concentration: p.concentration,
       fragranceFamily: p.fragranceFamily,
       active: p.active,
+      featured: p.featured,
       imageUrl: p.images[0]?.url || null,
       decantCount: decantVariants.length,
       fullBottleCount: fullBottleVariants.length,
@@ -103,7 +104,7 @@ export default async function AdminProductsPage() {
             Fragrance Products
           </h1>
           <p className="text-sm text-[var(--text-secondary)] mt-1">
-            Manage product descriptions, fragrance pyramids, decant sizes, and retail pricing.
+            {products.length} product{products.length !== 1 ? "s" : ""} · Manage descriptions, fragrance pyramids, decant sizes, and pricing.
           </p>
         </div>
         <div className="flex items-center gap-3">
@@ -113,111 +114,147 @@ export default async function AdminProductsPage() {
             </Button>
           </Link>
           <Link href="/admin/inventory">
-            <Button variant="primary" size="sm">
+            <Button variant="secondary" size="sm">
               <Package className="h-4 w-4" />
-              <span>Decant Liquid Status</span>
+              <span>Inventory</span>
+            </Button>
+          </Link>
+          <Link href="/admin/products/new">
+            <Button variant="primary" size="sm">
+              <Plus className="h-4 w-4" />
+              <span>Add Product</span>
             </Button>
           </Link>
         </div>
       </div>
 
       {products.length === 0 ? (
-        <div className="p-12 text-center rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface)] space-y-3">
+        <div className="p-12 text-center rounded-[var(--radius-lg)] border border-[var(--border-subtle)] bg-[var(--surface)] space-y-4">
           <Package className="h-10 w-10 text-[var(--text-muted)] mx-auto" />
-          <h3 className="text-lg font-bold text-[var(--text-strong)]">No products cataloged</h3>
+          <h3 className="text-lg font-bold text-[var(--text-strong)]">No products yet</h3>
           <p className="text-sm text-[var(--text-muted)] max-w-sm mx-auto">
-            Populate sample products using the development seed script or add your inventory.
+            Start by adding a brand, then click &quot;Add Product&quot; to create your first perfume.
           </p>
+          <div className="flex items-center justify-center gap-3">
+            <Link href="/admin/brands">
+              <Button variant="secondary" size="sm">Add a Brand First</Button>
+            </Link>
+            <Link href="/admin/products/new">
+              <Button variant="primary" size="sm">
+                <Plus className="h-4 w-4" />
+                <span>Add Product</span>
+              </Button>
+            </Link>
+          </div>
         </div>
       ) : (
-        <Table>
-          <TableHeader>
-            <TableRow>
-              <TableHead>Product & Brand</TableHead>
-              <TableHead>Format</TableHead>
-              <TableHead>Concentration</TableHead>
-              <TableHead>Decant Liquid</TableHead>
-              <TableHead>Sealed Stock</TableHead>
-              <TableHead>Pricing (BDT)</TableHead>
-              <TableHead>Status</TableHead>
-              <TableHead className="text-right">Actions</TableHead>
-            </TableRow>
-          </TableHeader>
-          <TableBody>
-            {products.map((p) => (
-              <TableRow key={p.id}>
-                <TableCell>
-                  <div className="flex items-center gap-3">
-                    <div className="h-12 w-12 rounded-[var(--radius-sm)] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] relative shrink-0 overflow-hidden flex items-center justify-center">
-                      {p.imageUrl ? (
-                        <Image
-                          src={p.imageUrl}
-                          alt={p.name}
-                          fill
-                          className="object-cover"
-                          sizes="48px"
-                        />
-                      ) : (
-                        <Package className="h-5 w-5 text-[var(--text-muted)]" />
-                      )}
-                    </div>
-                    <div>
-                      <div className="font-bold text-[var(--text-strong)]">{p.name}</div>
-                      <div className="text-xs text-[var(--text-secondary)]">{p.brand}</div>
-                    </div>
-                  </div>
-                </TableCell>
-                <TableCell>
-                  <Badge variant="default">{p.format}</Badge>
-                </TableCell>
-                <TableCell className="text-xs font-semibold text-[var(--text-strong)]">
-                  {p.concentration || "—"}
-                </TableCell>
-                <TableCell className="tabular-nums">
-                  <span className="font-bold text-[var(--text-strong)]">
-                    {formatVolume(p.availableLiquid)}
-                  </span>
-                  <div className="text-xs text-[var(--text-muted)]">{p.decantCount} size(s)</div>
-                </TableCell>
-                <TableCell className="tabular-nums">
-                  <span className="font-bold text-[var(--text-strong)]">
-                    {p.sealedUnits} unit(s)
-                  </span>
-                  <div className="text-xs text-[var(--text-muted)]">
-                    {p.fullBottleCount} bottle size(s)
-                  </div>
-                </TableCell>
-                <TableCell className="text-xs space-y-0.5">
-                  {p.lowestDecantPrice && (
-                    <div className="text-[var(--text-strong)] font-semibold">
-                      Decants from {formatBDT(p.lowestDecantPrice)}
-                    </div>
-                  )}
-                  {p.lowestFullBottlePrice && (
-                    <div className="text-[var(--text-secondary)]">
-                      Bottle: {formatBDT(p.lowestFullBottlePrice)}
-                    </div>
-                  )}
-                </TableCell>
-                <TableCell>
-                  <Badge variant={p.active ? "success" : "default"}>
-                    {p.active ? "Active" : "Archived"}
-                  </Badge>
-                </TableCell>
-                <TableCell className="text-right">
-                  <Link
-                    href={`/products/${p.slug}`}
-                    target="_blank"
-                    className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-strong)] p-1.5 rounded hover:bg-[var(--surface-subtle)]"
-                  >
-                    <ExternalLink className="h-3.5 w-3.5" />
-                    <span>View</span>
-                  </Link>
-                </TableCell>
+        <div className="overflow-x-auto">
+          <Table>
+            <TableHeader>
+              <TableRow>
+                <TableHead>Product & Brand</TableHead>
+                <TableHead>Format</TableHead>
+                <TableHead>Concentration</TableHead>
+                <TableHead>Decant Liquid</TableHead>
+                <TableHead>Sealed Stock</TableHead>
+                <TableHead>Pricing (BDT)</TableHead>
+                <TableHead>Status</TableHead>
+                <TableHead className="text-right">Actions</TableHead>
               </TableRow>
-            ))}
-          </TableBody>
-        </Table>
+            </TableHeader>
+            <TableBody>
+              {products.map((p) => (
+                <TableRow key={p.id}>
+                  <TableCell>
+                    <div className="flex items-center gap-3">
+                      <div className="h-12 w-12 rounded-[var(--radius-sm)] bg-[var(--surface-subtle)] border border-[var(--border-subtle)] relative shrink-0 overflow-hidden flex items-center justify-center">
+                        {p.imageUrl ? (
+                          <Image
+                            src={p.imageUrl}
+                            alt={p.name}
+                            fill
+                            className="object-cover"
+                            sizes="48px"
+                          />
+                        ) : (
+                          <Package className="h-5 w-5 text-[var(--text-muted)]" />
+                        )}
+                      </div>
+                      <div>
+                        <div className="font-bold text-[var(--text-strong)]">{p.name}</div>
+                        <div className="text-xs text-[var(--text-secondary)]">{p.brand}</div>
+                        {p.featured && (
+                          <span className="text-xs text-[var(--status-warning)] font-semibold">★ Featured</span>
+                        )}
+                      </div>
+                    </div>
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant="default">{p.format}</Badge>
+                  </TableCell>
+                  <TableCell className="text-xs font-semibold text-[var(--text-strong)]">
+                    {p.concentration || "—"}
+                  </TableCell>
+                  <TableCell className="tabular-nums">
+                    <span className="font-bold text-[var(--text-strong)]">
+                      {formatVolume(p.availableLiquid)}
+                    </span>
+                    <div className="text-xs text-[var(--text-muted)]">{p.decantCount} size(s)</div>
+                  </TableCell>
+                  <TableCell className="tabular-nums">
+                    <span className="font-bold text-[var(--text-strong)]">
+                      {p.sealedUnits} unit(s)
+                    </span>
+                    <div className="text-xs text-[var(--text-muted)]">
+                      {p.fullBottleCount} bottle size(s)
+                    </div>
+                  </TableCell>
+                  <TableCell className="text-xs space-y-0.5">
+                    {p.lowestDecantPrice && (
+                      <div className="text-[var(--text-strong)] font-semibold">
+                        Decants from {formatBDT(p.lowestDecantPrice)}
+                      </div>
+                    )}
+                    {p.lowestFullBottlePrice && (
+                      <div className="text-[var(--text-secondary)]">
+                        Bottle: {formatBDT(p.lowestFullBottlePrice)}
+                      </div>
+                    )}
+                    {!p.lowestDecantPrice && !p.lowestFullBottlePrice && (
+                      <span className="text-[var(--status-warning)] font-semibold text-xs">No variants yet</span>
+                    )}
+                  </TableCell>
+                  <TableCell>
+                    <Badge variant={p.active ? "success" : "default"}>
+                      {p.active ? "Active" : "Archived"}
+                    </Badge>
+                  </TableCell>
+                  <TableCell className="text-right">
+                    <div className="flex items-center justify-end gap-1">
+                      <Link
+                        href={`/admin/products/${p.id}`}
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-strong)] p-1.5 rounded hover:bg-[var(--surface-subtle)]"
+                        title="Edit product"
+                      >
+                        <Pencil className="h-3.5 w-3.5" />
+                        <span>Edit</span>
+                      </Link>
+                      <Link
+                        href={`/products/${p.slug}`}
+                        target="_blank"
+                        className="inline-flex items-center gap-1 text-xs font-semibold text-[var(--text-secondary)] hover:text-[var(--text-strong)] p-1.5 rounded hover:bg-[var(--surface-subtle)]"
+                        title="View on storefront"
+                      >
+                        <ExternalLink className="h-3.5 w-3.5" />
+                        <span>View</span>
+                      </Link>
+                    </div>
+                  </TableCell>
+                </TableRow>
+              ))}
+            </TableBody>
+          </Table>
+        </div>
       )}
     </div>
   );
