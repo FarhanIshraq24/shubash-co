@@ -1,26 +1,146 @@
 @import "tailwindcss";
 
 :root {
-  --background: #ffffff;
-  --foreground: #171717;
+  /* Core brand palette inspired by Shubash & Co logo */
+  --background: #FFFCED;       /* Cream page background */
+  --surface: #FFFFFF;          /* Pure white cards, modals, admin panels */
+  --surface-subtle: #F5F1E5;   /* Subtle tinted cream for secondary sections */
+  --surface-raised: #FFFFFF;
+
+  --foreground: #48463E;       /* Charcoal body text */
+  --text-strong: #292820;      /* Deep charcoal for headings & high-contrast labels */
+  --text-secondary: #625F55;   /* Medium charcoal for subtitles & meta */
+  --text-muted: #7E796E;       /* Soft charcoal for helper text */
+
+  --border-subtle: #E4DFD0;    /* Card and divider borders */
+  --border-control: #827C6D;   /* Interactive input and control borders */
+  --border-focus: #48463E;
+
+  --primary: #48463E;          /* Charcoal primary buttons & accents */
+  --primary-hover: #302F29;    /* Darker charcoal on hover */
+  --primary-foreground: #FFFCED; /* Cream text on charcoal buttons */
+
+  --secondary: #FFFFFF;
+  --secondary-hover: #F5F1E5;
+  --secondary-foreground: #292820;
+
+  --accent: #EFE9D8;
+  --accent-foreground: #292820;
+
+  --focus-ring: #48463E;
+
+  /* Meaningful status colors (always paired with clear text labels) */
+  --status-success: #2D6A4F;
+  --status-success-bg: #EAF4EE;
+  --status-success-border: #A3D9B5;
+
+  --status-warning: #92400E;
+  --status-warning-bg: #FEF3C7;
+  --status-warning-border: #FCD34D;
+
+  --status-error: #991B1B;
+  --status-error-bg: #FEE2E2;
+  --status-error-border: #FCA5A5;
+
+  --status-info: #3B5F75;
+  --status-info-bg: #EBF2F7;
+  --status-info-border: #B7D1E2;
+
+  --radius-sm: 4px;
+  --radius-md: 6px;
+  --radius-lg: 8px;
 }
 
 @theme inline {
   --color-background: var(--background);
+  --color-surface: var(--surface);
+  --color-surface-subtle: var(--surface-subtle);
+  --color-surface-raised: var(--surface-raised);
+
   --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+  --color-text-strong: var(--text-strong);
+  --color-text-secondary: var(--text-secondary);
+  --color-text-muted: var(--text-muted);
+
+  --color-border-subtle: var(--border-subtle);
+  --color-border-control: var(--border-control);
+
+  --color-primary: var(--primary);
+  --color-primary-hover: var(--primary-hover);
+  --color-primary-foreground: var(--primary-foreground);
+
+  --color-secondary: var(--secondary);
+  --color-secondary-hover: var(--secondary-hover);
+  --color-secondary-foreground: var(--secondary-foreground);
+
+  --color-accent: var(--accent);
+  --color-accent-foreground: var(--accent-foreground);
+
+  --color-status-success: var(--status-success);
+  --color-status-success-bg: var(--status-success-bg);
+  --color-status-success-border: var(--status-success-border);
+
+  --color-status-warning: var(--status-warning);
+  --color-status-warning-bg: var(--status-warning-bg);
+  --color-status-warning-border: var(--status-warning-border);
+
+  --color-status-error: var(--status-error);
+  --color-status-error-bg: var(--status-error-bg);
+  --color-status-error-border: var(--status-error-border);
+
+  --color-status-info: var(--status-info);
+  --color-status-info-bg: var(--status-info-bg);
+  --color-status-info-border: var(--status-info-border);
+
+  --font-sans: var(--font-inter), -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, sans-serif;
+  --font-bangla: var(--font-noto-bengali), "Noto Sans Bengali", system-ui, sans-serif;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
-  }
+/* Base resets & typography */
+html {
+  font-size: 16px;
+  scroll-behavior: smooth;
+  -webkit-font-smoothing: antialiased;
+  -moz-osx-font-smoothing: grayscale;
 }
 
 body {
-  background: var(--background);
+  background-color: var(--background);
   color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+  font-family: var(--font-sans);
+  line-height: 1.6;
+  min-height: 100vh;
+}
+
+/* Accessibility: Visible, high-contrast focus rings */
+:focus-visible {
+  outline: 2px solid var(--focus-ring);
+  outline-offset: 2px;
+}
+
+/* Touch targets: at least 44px for accessibility */
+button, a.button, input[type="submit"], input[type="button"] {
+  min-height: 44px;
+}
+
+/* Bangla font utility */
+.font-bangla {
+  font-family: var(--font-bangla);
+  letter-spacing: normal !important; /* avoid wide letter spacing in Bengali script */
+}
+
+/* Currency formatting badge / price */
+.bdt-price {
+  font-feature-settings: "tnum" 1;
+  font-variant-numeric: tabular-nums;
+}
+
+/* Reduced motion preference */
+@media (prefers-reduced-motion: reduce) {
+  *, *::before, *::after {
+    animation-duration: 0.01ms !important;
+    animation-iteration-count: 1 !important;
+    transition-duration: 0.01ms !important;
+    scroll-behavior: auto !important;
+  }
 }
