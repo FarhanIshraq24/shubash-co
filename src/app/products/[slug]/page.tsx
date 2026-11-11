@@ -5,6 +5,7 @@ import { Header } from "@/components/storefront/Header";
 import { Footer } from "@/components/storefront/Footer";
 import { ProductDetailClient } from "./ProductDetailClient";
 import { getProductBySlug } from "@/lib/catalog";
+import { computeVariantStock } from "@/lib/cart";
 import { getCurrentUser } from "@/lib/auth-helpers";
 import { ChevronRight } from "lucide-react";
 
@@ -50,6 +51,13 @@ export default async function ProductPage({ params }: ProductPageProps) {
     notFound();
   }
 
+  const stockOf = (v: (typeof product.variants)[number]) =>
+    computeVariantStock(
+      { ...v, product: { id: product.id } },
+      product.sourceBottles,
+      product.sealedBottles
+    ).maxQty;
+
   // Format serializable props
   const serializableProduct = {
     id: product.id,
@@ -83,6 +91,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
       price: v.price.toString(),
       compareAtPrice: v.compareAtPrice ? v.compareAtPrice.toString() : null,
       packagingNote: v.packagingNote,
+      maxQty: stockOf(v),
     })),
     fullBottleVariants: product.fullBottleVariants.map((v) => ({
       id: v.id,
@@ -92,6 +101,7 @@ export default async function ProductPage({ params }: ProductPageProps) {
       price: v.price.toString(),
       compareAtPrice: v.compareAtPrice ? v.compareAtPrice.toString() : null,
       packagingNote: v.packagingNote,
+      maxQty: stockOf(v),
     })),
   };
 

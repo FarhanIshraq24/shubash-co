@@ -13,6 +13,7 @@ import {
   TableCell,
 } from "@/components/ui/table";
 import { Plus, Pencil, Trash2, AlertCircle, CheckCircle, X } from "lucide-react";
+import { SingleImagePicker } from "@/components/admin/ImageUploader";
 
 interface BrandRow {
   id: string;
@@ -20,6 +21,7 @@ interface BrandRow {
   slug: string;
   country: string | null;
   description: string | null;
+  logoUrl: string | null;
   active: boolean;
   productCount: number;
 }
@@ -32,11 +34,13 @@ function ModalOverlay({
   open,
   onClose,
   title,
+  error,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
+  error?: string | null;
   children: React.ReactNode;
 }) {
   if (!open) return null;
@@ -52,7 +56,15 @@ function ModalOverlay({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="p-5 space-y-4">
+          {error && (
+            <div role="alert" className="p-3 rounded-[var(--radius-md)] border text-sm flex items-start gap-2 bg-[var(--status-error-bg)] border-[var(--status-error-border)] text-[var(--status-error)]">
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -83,6 +95,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
 
   const [formName, setFormName] = useState("");
   const [formCountry, setFormCountry] = useState("");
+  const [formLogoUrl, setFormLogoUrl] = useState("");
   const [formDescription, setFormDescription] = useState("");
   const [formActive, setFormActive] = useState(true);
 
@@ -99,7 +112,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
   }, [initialBrands]);
 
   const openAdd = () => {
-    setFormName(""); setFormCountry(""); setFormDescription(""); setFormActive(true);
+    setFormName(""); setFormCountry(""); setFormDescription(""); setFormActive(true); setFormLogoUrl("");
     setModal({ type: "add" });
     setFeedback(null);
   };
@@ -107,6 +120,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
   const openEdit = (brand: BrandRow) => {
     setFormName(brand.name);
     setFormCountry(brand.country || "");
+    setFormLogoUrl(brand.logoUrl || "");
     setFormDescription(brand.description || "");
     setFormActive(brand.active);
     setModal({ type: "edit", brand });
@@ -117,7 +131,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
 
   const handleAdd = () => {
     startTransition(async () => {
-      const res = await addBrandAction({ name: formName, country: formCountry, description: formDescription });
+      const res = await addBrandAction({ name: formName, country: formCountry, description: formDescription, logoUrl: formLogoUrl });
       if (res.success) {
         setFeedback({ type: "success", message: `Brand "${formName}" added successfully!` });
         closeModal();
@@ -134,6 +148,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
         name: formName,
         country: formCountry,
         description: formDescription,
+        logoUrl: formLogoUrl,
         active: formActive,
       });
       if (res.success) {
@@ -162,6 +177,9 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
     <div className="space-y-4">
       <Field label="Brand Name" required>
         <input type="text" value={formName} onChange={(e) => setFormName(e.target.value)} placeholder="e.g. Lattafa" className={inputClass} />
+      </Field>
+      <Field label="Logo">
+        <SingleImagePicker value={formLogoUrl} onChange={setFormLogoUrl} folder="brands" />
       </Field>
       <Field label="Country of Origin">
         <input type="text" value={formCountry} onChange={(e) => setFormCountry(e.target.value)} placeholder="e.g. UAE" className={inputClass} />
@@ -250,7 +268,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
       )}
 
       {/* Add Modal */}
-      <ModalOverlay open={modal?.type === "add"} onClose={closeModal} title="Add New Brand">
+      <ModalOverlay open={modal?.type === "add"} onClose={closeModal} error={modal && feedback?.type === "error" ? feedback.message : null} title="Add New Brand">
         <div className="space-y-5">
           {BrandForm}
           <div className="flex gap-3 pt-2">
@@ -261,7 +279,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
       </ModalOverlay>
 
       {/* Edit Modal */}
-      <ModalOverlay open={modal?.type === "edit"} onClose={closeModal} title={`Edit: ${modal?.type === "edit" ? modal.brand.name : ""}`}>
+      <ModalOverlay open={modal?.type === "edit"} onClose={closeModal} error={modal && feedback?.type === "error" ? feedback.message : null} title={`Edit: ${modal?.type === "edit" ? modal.brand.name : ""}`}>
         <div className="space-y-5">
           {BrandForm}
           <div className="flex gap-3 pt-2">
@@ -272,7 +290,7 @@ export function BrandsClient({ brands: initialBrands }: BrandsClientProps) {
       </ModalOverlay>
 
       {/* Delete Modal */}
-      <ModalOverlay open={modal?.type === "delete"} onClose={closeModal} title="Delete Brand">
+      <ModalOverlay open={modal?.type === "delete"} onClose={closeModal} error={modal && feedback?.type === "error" ? feedback.message : null} title="Delete Brand">
         {modal?.type === "delete" && (
           <div className="space-y-4">
             <p className="text-sm text-[var(--text-secondary)]">

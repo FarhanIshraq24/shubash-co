@@ -37,6 +37,8 @@ export interface SerializedCartSummary {
   freeDeliveryThreshold: string | null;
   freeDeliveryEligible: boolean;
   itemCount: number;
+  couponCode?: string | null;
+  couponError?: string | null;
 }
 
 interface CartContextType {
@@ -107,6 +109,28 @@ export function CartProvider({ children }: { children: React.ReactNode }) {
       if (res.ok) {
         const data = (await res.json()) as SerializedCartSummary;
         setSummary(data);
+
+        // Self-heal the stored cart: drop variants that were deleted/hidden and
+        // clamp quantities to what is in stock, so checkout can't get stuck.
+        const byId = new Map(data.items.map((i) => [i.variantId, i]));
+        const needsFix = items.some((i) => {
+          const v = byId.get(i.variantId);
+          return !v || (v.inStock && i.quantity > v.maxQty);
+        });
+        if (needsFix) {
+          const fixed = items
+            .filter((i) => byId.has(i.variantId))
+            .map((i) => {
+              const v = byId.get(i.variantId)!;
+              return v.inStock && i.quantity > v.maxQty ? { ...i, quantity: v.maxQty } : i;
+            });
+          try {
+            localStorage.setItem(LOCAL_STORAGE_KEY, JSON.stringify(fixed));
+          } catch {
+            /* storage unavailable */
+          }
+          setItems(fixed);
+        }
       }
     } catch (err) {
       console.error("Failed to validate cart with server", err);

@@ -27,6 +27,7 @@ export interface VariantData {
   price: string | number;
   compareAtPrice?: string | number | null;
   packagingNote?: string | null;
+  maxQty: number;
 }
 
 export interface ProductDetailProps {
@@ -56,16 +57,17 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
   const hasDecants = product.decantVariants.length > 0;
   const hasFullBottles = product.fullBottleVariants.length > 0;
 
+  const decantsInStock = product.decantVariants.some((v) => v.maxQty > 0);
   const [selectedFormat, setSelectedFormat] = useState<"DECANT" | "FULL_BOTTLE">(
-    hasDecants ? "DECANT" : "FULL_BOTTLE"
+    hasDecants && (decantsInStock || !hasFullBottles) ? "DECANT" : "FULL_BOTTLE"
   );
 
   const currentVariants =
     selectedFormat === "DECANT" ? product.decantVariants : product.fullBottleVariants;
 
-  const [selectedVariantId, setSelectedVariantId] = useState<string>(
-    currentVariants[0]?.id || ""
-  );
+  const firstAvailable = (vs: VariantData[]) => (vs.find((v) => v.maxQty > 0) ?? vs[0])?.id || "";
+
+  const [selectedVariantId, setSelectedVariantId] = useState<string>(firstAvailable(currentVariants));
 
   const [quantity, setQuantity] = useState<number>(1);
   const [selectedImageIndex, setSelectedImageIndex] = useState<number>(0);
@@ -76,7 +78,7 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
     setSelectedFormat(format);
     const variants = format === "DECANT" ? product.decantVariants : product.fullBottleVariants;
     if (variants.length > 0) {
-      setSelectedVariantId(variants[0].id);
+      setSelectedVariantId(firstAvailable(variants));
     }
     setQuantity(1);
   };
@@ -84,10 +86,13 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
   const selectedVariant =
     currentVariants.find((v) => v.id === selectedVariantId) || currentVariants[0];
 
-  const { addItem } = useCart();
+  const { addItem, items: cartItems } = useCart();
+  const inCart = cartItems.find((i) => i.variantId === selectedVariant?.id)?.quantity ?? 0;
+  const maxQty = selectedVariant?.maxQty ?? 0;
+  const canAdd = !!selectedVariant && maxQty > 0 && inCart + quantity <= maxQty;
 
   const handleAddToCart = () => {
-    if (!selectedVariant) return;
+    if (!selectedVariant || !canAdd) return;
 
     try {
       addItem(selectedVariant.id, quantity);
@@ -306,14 +311,17 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
                   <button
                     key={variant.id}
                     type="button"
-                    onClick={() => setSelectedVariantId(variant.id)}
+                    onClick={() => {
+                      setSelectedVariantId(variant.id);
+                      setQuantity(1);
+                    }}
                     className={`p-3 rounded-[var(--radius-md)] border text-center transition-all cursor-pointer ${
                       isSelected
                         ? "border-2 border-[var(--primary)] bg-[var(--primary)] text-[var(--primary-foreground)] shadow-sm"
                         : "border-[var(--border-control)] bg-[var(--surface)] text-[var(--text-strong)] hover:border-[var(--foreground)]"
                     }`}
                   >
-                    <div className="font-bold text-base leading-tight">
+                    <div className={`font-bold text-base leading-tight ${variant.maxQty <= 0 ? "line-through opacity-60" : ""}`}>
                       {formatVolume(variant.volumeMl)}
                     </div>
                     <div
@@ -321,7 +329,7 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
                         isSelected ? "text-[var(--primary-foreground)]/90" : "text-[var(--text-secondary)] font-medium"
                       }`}
                     >
-                      {formatBDT(variant.price)}
+                      {variant.maxQty <= 0 ? "Sold out" : formatBDT(variant.price)}
                     </div>
                   </button>
                 );
@@ -335,21 +343,36 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
           <div className="p-4 rounded-[var(--radius-md)] bg-[var(--surface)] border border-[var(--border-subtle)] flex items-center justify-between">
             <div>
               <div className="text-xs text-[var(--text-secondary)] font-medium">Price (BDT)</div>
-              <div className="text-3xl font-extrabold text-[var(--text-strong)] tabular-nums mt-0.5">
-                {formatBDT(selectedVariant.price)}
+              <div className="flex items-baseline gap-2 mt-0.5">
+                <span className="text-3xl font-extrabold text-[var(--text-strong)] tabular-nums">
+                  {formatBDT(selectedVariant.price)}
+                </span>
+                {selectedVariant.compareAtPrice && Number(selectedVariant.compareAtPrice) > Number(selectedVariant.price) && (
+                  <span className="text-base text-[var(--text-muted)] line-through tabular-nums">
+                    {formatBDT(selectedVariant.compareAtPrice)}
+                  </span>
+                )}
               </div>
+              {selectedVariant.packagingNote && (
+                <p className="text-[11px] text-[var(--text-muted)] mt-1">{selectedVariant.packagingNote}</p>
+              )}
             </div>
 
             <div className="text-right">
-              <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded bg-[var(--status-success-bg)] text-[var(--status-success)] border border-[var(--status-success-border)]">
-                <span className="h-1.5 w-1.5 rounded-full bg-[var(--status-success)]" />
-                <span>In Stock & Ready</span>
-              </span>
-              <p className="text-[11px] text-[var(--text-muted)] mt-1">
-                {selectedFormat === "DECANT"
-                  ? `${product.availableMl}ml available to dispense`
-                  : `${product.sealedUnits} sealed bottle(s) in stock`}
-              </p>
+              {maxQty > 0 ? (
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded bg-[var(--status-success-bg)] text-[var(--status-success)] border border-[var(--status-success-border)]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--status-success)]" />
+                  <span>In Stock</span>
+                </span>
+              ) : (
+                <span className="inline-flex items-center gap-1.5 text-xs font-semibold px-2.5 py-1 rounded bg-[var(--status-error-bg)] text-[var(--status-error)] border border-[var(--status-error-border)]">
+                  <span className="h-1.5 w-1.5 rounded-full bg-[var(--status-error)]" />
+                  <span>Out of Stock</span>
+                </span>
+              )}
+              {maxQty > 0 && maxQty <= 5 && (
+                <p className="text-[11px] text-[var(--status-warning)] font-semibold mt-1">Only {maxQty} left</p>
+              )}
             </div>
           </div>
         )}
@@ -373,8 +396,9 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
               </span>
               <button
                 type="button"
-                onClick={() => setQuantity(quantity + 1)}
-                className="px-3.5 h-full text-[var(--text-strong)] hover:bg-[var(--surface-subtle)]"
+                onClick={() => setQuantity(Math.min(quantity + 1, Math.max(1, maxQty - inCart)))}
+                disabled={quantity >= maxQty - inCart}
+                className="px-3.5 disabled:opacity-30 h-full text-[var(--text-strong)] hover:bg-[var(--surface-subtle)]"
                 aria-label="Increase quantity"
               >
                 <Plus className="h-4 w-4" />
@@ -388,9 +412,16 @@ export function ProductDetailClient({ product }: ProductDetailProps) {
               size="lg"
               className="flex-1"
               onClick={handleAddToCart}
+              disabled={!canAdd}
             >
               <ShoppingBag className="h-5 w-5" />
-              <span>Add to Cart · {formatBDT(Number(selectedVariant?.price || 0) * quantity)}</span>
+              <span>
+                {maxQty <= 0
+                  ? "Out of Stock"
+                  : inCart >= maxQty
+                  ? "Max quantity in cart"
+                  : `Add to Cart · ${formatBDT(Number(selectedVariant?.price || 0) * quantity)}`}
+              </span>
             </Button>
           </div>
 

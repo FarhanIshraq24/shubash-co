@@ -48,6 +48,9 @@ export interface CartSummary {
   freeDeliveryThreshold: Decimal | null;
   freeDeliveryEligible: boolean;
   itemCount: number;
+  couponId: string | null;
+  couponCode: string | null;
+  couponError: string | null;
 }
 
 /** Default delivery fees — overridden by DeliveryZone rows in DB */
@@ -79,11 +82,24 @@ export async function validateCart(
       product: {
         include: {
           brand: true,
-          images: { take: 1, orderBy: { position: "asc" } },
+          images: { take: 1, orderBy: [{ isPrimary: "desc" }, { position: "asc" }] },
         },
       },
     },
   });
+
+  // Load stock for all products in one go (avoids a query per cart line)
+  const productIds = [...new Set(variants.map((v) => v.product.id))];
+  const [sourceBottles, sealedBottles] = await Promise.all([
+    prisma.sourceBottle.findMany({
+      where: { productId: { in: productIds }, status: SourceBottleStatus.ACTIVE },
+      select: { productId: true, remainingMl: true, reservedMl: true },
+    }),
+    prisma.sealedBottle.findMany({
+      where: { productId: { in: productIds }, quantity: { gt: 0 } },
+      select: { productId: true, volumeMl: true, quantity: true },
+    }),
+  ]);
 
   const validatedItems: ValidatedCartItem[] = [];
 
@@ -92,39 +108,17 @@ export async function validateCart(
     if (!variant || !variant.product.active || !variant.active) continue;
 
     const quantity = Math.max(1, Math.min(local.quantity, 99));
-    let maxQty = 0;
-    let inStock = false;
+    const { maxQty } = computeVariantStock(variant, sourceBottles, sealedBottles);
+    const inStock = maxQty > 0;
     let note: string | null = null;
-
-    if (variant.format === ProductFormat.DECANT) {
-      // Liquid availability: check source bottles
-      const sourceBottles = await prisma.sourceBottle.findMany({
-        where: { productId: variant.product.id, status: SourceBottleStatus.ACTIVE },
-        select: { remainingMl: true, reservedMl: true },
-      });
-      const availableMl = sourceBottles.reduce(
-        (sum, sb) => sum.plus(new Decimal(sb.remainingMl.toString()).minus(new Decimal(sb.reservedMl.toString()))),
-        new Decimal(0)
-      );
-      const decantVolume = variant.volumeMl ? new Decimal(variant.volumeMl.toString()) : new Decimal(0);
-      if (decantVolume.gt(0)) {
-        maxQty = Math.floor(availableMl.div(decantVolume).toNumber());
-        inStock = maxQty > 0;
-        if (inStock && maxQty < 5) {
-          note = `Only ${maxQty} decants available at this size`;
-        }
-      }
-    } else {
-      // Full bottle: check sealed stock
-      const sealed = await prisma.sealedBottle.findMany({
-        where: { productId: variant.product.id, quantity: { gt: 0 } },
-        select: { quantity: true },
-      });
-      maxQty = sealed.reduce((sum, s) => sum + s.quantity, 0);
-      inStock = maxQty > 0;
-      if (inStock && maxQty <= 3) {
-        note = `Only ${maxQty} left in stock`;
-      }
+    if (!inStock) {
+      note = "Out of stock";
+    } else if (local.quantity > maxQty) {
+      note = `Only ${maxQty} available — quantity adjusted`;
+    } else if (variant.format === ProductFormat.DECANT && maxQty < 5) {
+      note = `Only ${maxQty} decant${maxQty === 1 ? "" : "s"} left at this size`;
+    } else if (variant.format !== ProductFormat.DECANT && maxQty <= 3) {
+      note = `Only ${maxQty} left in stock`;
     }
 
     const qty = Math.min(quantity, Math.max(maxQty, 1));
@@ -149,7 +143,10 @@ export async function validateCart(
     });
   }
 
-  const subtotal = validatedItems.reduce((s, i) => s.plus(i.subtotal), new Decimal(0));
+  // Out-of-stock lines are shown in the cart but not charged
+  const subtotal = validatedItems
+    .filter((i) => i.inStock)
+    .reduce((s, i) => s.plus(i.subtotal), new Decimal(0));
 
   // Delivery fee from DB zone settings
   let dhakaFee = DEFAULT_DHAKA_FEE;
@@ -173,33 +170,47 @@ export async function validateCart(
   const isOutside = districtSlug && districtSlug !== "dhaka";
   const baseFee = isOutside ? outsideFee : dhakaFee;
   const freeDeliveryEligible = subtotal.gte(freeThreshold);
-  const deliveryFee = freeDeliveryEligible ? new Decimal(0) : baseFee;
+  let deliveryFee = freeDeliveryEligible || validatedItems.length === 0 ? new Decimal(0) : baseFee;
 
   // Coupon discount
   let discount = new Decimal(0);
+  let couponId: string | null = null;
+  let appliedCode: string | null = null;
+  let couponError: string | null = null;
+  let freeDeliveryFromCoupon = false;
   if (couponCode && couponCode.trim()) {
     try {
+      const now = new Date();
       const coupon = await prisma.coupon.findFirst({
-        where: {
-          code: couponCode.toUpperCase().trim(),
-          active: true,
-          OR: [
-            { endAt: null },
-            { endAt: { gte: new Date() } },
-          ],
-        },
+        where: { code: couponCode.toUpperCase().trim(), active: true },
       });
-      if (coupon) {
+      if (!coupon) {
+        couponError = "This coupon code is not valid.";
+      } else if (coupon.startAt && coupon.startAt > now) {
+        couponError = "This coupon is not active yet.";
+      } else if (coupon.endAt && coupon.endAt < now) {
+        couponError = "This coupon has expired.";
+      } else if (coupon.totalLimit !== null && coupon.timesUsed >= coupon.totalLimit) {
+        couponError = "This coupon has reached its usage limit.";
+      } else if (coupon.minOrderAmount && subtotal.lt(coupon.minOrderAmount.toString())) {
+        couponError = `Minimum order of ${formatBDT(coupon.minOrderAmount.toString())} required for this coupon.`;
+      } else {
         if (coupon.type === "PERCENT") {
           discount = subtotal.mul(new Decimal(coupon.value.toString()).div(100)).toDecimalPlaces(2);
         } else {
-          discount = Decimal.min(new Decimal(coupon.value.toString()), subtotal);
+          discount = new Decimal(coupon.value.toString());
         }
+        if (coupon.maxDiscount) discount = Decimal.min(discount, new Decimal(coupon.maxDiscount.toString()));
+        discount = Decimal.min(discount, subtotal);
+        freeDeliveryFromCoupon = coupon.freeDelivery;
+        couponId = coupon.id;
+        appliedCode = coupon.code;
       }
     } catch {
-      // Coupon validation failed silently
+      couponError = "Could not validate coupon right now.";
     }
   }
+  if (freeDeliveryFromCoupon) deliveryFee = new Decimal(0);
 
   const total = subtotal.plus(deliveryFee).minus(discount);
 
@@ -216,7 +227,40 @@ export async function validateCart(
     freeDeliveryThreshold: freeThreshold,
     freeDeliveryEligible,
     itemCount: validatedItems.reduce((s, i) => s + i.quantity, 0),
+    couponId,
+    couponCode: appliedCode,
+    couponError,
   };
+}
+
+/**
+ * How many units of a variant can be sold right now.
+ *  - DECANT: one order line is filled from a single source bottle, so the
+ *    limit is the best single bottle's available ml ÷ decant size.
+ *  - FULL_BOTTLE: sealed units of the same bottle size.
+ */
+export function computeVariantStock(
+  variant: { format: ProductFormat; volumeMl: Decimal.Value | { toString(): string }; product: { id: string } },
+  sourceBottles: { productId: string; remainingMl: { toString(): string }; reservedMl: { toString(): string } }[],
+  sealedBottles: { productId: string; volumeMl: { toString(): string }; quantity: number }[]
+): { maxQty: number } {
+  const vol = new Decimal(variant.volumeMl.toString());
+  if (vol.lte(0)) return { maxQty: 0 };
+
+  if (variant.format === ProductFormat.DECANT) {
+    const best = sourceBottles
+      .filter((b) => b.productId === variant.product.id)
+      .reduce((max, b) => {
+        const avail = new Decimal(b.remainingMl.toString()).minus(b.reservedMl.toString());
+        return avail.gt(max) ? avail : max;
+      }, new Decimal(0));
+    return { maxQty: Math.max(0, Math.floor(best.div(vol).toNumber())) };
+  }
+
+  const units = sealedBottles
+    .filter((b) => b.productId === variant.product.id && new Decimal(b.volumeMl.toString()).eq(vol))
+    .reduce((sum, b) => sum + b.quantity, 0);
+  return { maxQty: units };
 }
 
 function emptyCart(): CartSummary {
@@ -234,5 +278,8 @@ function emptyCart(): CartSummary {
     freeDeliveryThreshold: DEFAULT_FREE_THRESHOLD,
     freeDeliveryEligible: false,
     itemCount: 0,
+    couponId: null,
+    couponCode: null,
+    couponError: null,
   };
 }

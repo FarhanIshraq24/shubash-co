@@ -25,6 +25,7 @@ export async function addBrandAction(data: {
   name: string;
   country?: string;
   description?: string;
+  logoUrl?: string;
 }) {
   try {
     await requirePermission(Permission.PRODUCTS_WRITE);
@@ -40,6 +41,7 @@ export async function addBrandAction(data: {
         slug,
         country: data.country?.trim() || null,
         description: data.description?.trim() || null,
+        logoUrl: data.logoUrl?.trim() || null,
         active: true,
       },
     });
@@ -53,7 +55,7 @@ export async function addBrandAction(data: {
 
 export async function updateBrandAction(
   id: string,
-  data: { name: string; country?: string; description?: string; active: boolean }
+  data: { name: string; country?: string; description?: string; logoUrl?: string; active: boolean }
 ) {
   try {
     await requirePermission(Permission.PRODUCTS_WRITE);
@@ -65,6 +67,7 @@ export async function updateBrandAction(
         name: data.name.trim(),
         country: data.country?.trim() || null,
         description: data.description?.trim() || null,
+        logoUrl: data.logoUrl?.trim() || null,
         active: data.active,
       },
     });

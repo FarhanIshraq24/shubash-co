@@ -45,10 +45,10 @@ export async function addSealedBottleAction(data: {
     const admin = await requirePermission(Permission.INVENTORY_FILL);
 
     // Validate inputs
-    if (!data.productId) throw new Error("Product is required.");
-    if (data.volumeMl <= 0) throw new Error("Volume must be positive.");
-    if (data.quantity <= 0) throw new Error("Quantity must be at least 1.");
-    if (data.costPerUnit < 0) throw new Error("Cost cannot be negative.");
+    if (!data.productId) throw new Error("Please select a product.");
+    if (!Number.isFinite(data.volumeMl) || data.volumeMl <= 0) throw new Error("Enter a valid bottle volume in ml.");
+    if (!Number.isInteger(data.quantity) || data.quantity <= 0) throw new Error("Quantity must be a whole number of at least 1.");
+    if (!Number.isFinite(data.costPerUnit) || data.costPerUnit < 0) throw new Error("Enter a valid cost per unit (0 or more).");
 
     const sealedBottle = await prisma.$transaction(async (tx) => {
       const bottle = await tx.sealedBottle.create({
@@ -90,12 +90,13 @@ export async function addSealedBottleAction(data: {
 export async function updateSealedQuantityAction(
   sealedBottleId: string,
   newQuantity: number,
-  reason: string
+  reason: string,
+  details?: { costPerUnit?: number; batchRef?: string }
 ) {
   try {
     const admin = await requirePermission(Permission.INVENTORY_FILL);
 
-    if (newQuantity < 0) throw new Error("Quantity cannot be negative.");
+    if (!Number.isInteger(newQuantity) || newQuantity < 0) throw new Error("Quantity must be a whole number (0 or more).");
     if (!reason.trim()) throw new Error("Reason is required for inventory adjustments.");
 
     const result = await prisma.$transaction(async (tx) => {
@@ -107,9 +108,17 @@ export async function updateSealedQuantityAction(
 
       const diff = newQuantity - existing.quantity;
 
+      if (details?.costPerUnit !== undefined && (!Number.isFinite(details.costPerUnit) || details.costPerUnit < 0)) {
+        throw new Error("Enter a valid cost per unit.");
+      }
+
       const updated = await tx.sealedBottle.update({
         where: { id: sealedBottleId },
-        data: { quantity: newQuantity },
+        data: {
+          quantity: newQuantity,
+          ...(details?.costPerUnit !== undefined ? { costPerUnit: new Decimal(details.costPerUnit).toFixed(2) } : {}),
+          ...(details?.batchRef !== undefined ? { batchRef: details.batchRef.trim() || null } : {}),
+        },
       });
 
       await tx.stockMovement.create({
@@ -144,7 +153,7 @@ export async function adjustSourceBottleAction(
   try {
     const admin = await requirePermission(Permission.INVENTORY_FILL);
 
-    if (newRemainingMl < 0) throw new Error("Remaining ml cannot be negative.");
+    if (!Number.isFinite(newRemainingMl) || newRemainingMl < 0) throw new Error("Enter a valid remaining ml (0 or more).");
     if (!reason.trim()) throw new Error("Reason is required for inventory adjustments.");
 
     const result = await prisma.$transaction(async (tx) => {
@@ -164,13 +173,18 @@ export async function adjustSourceBottleAction(
         );
       }
 
+      if (newRemaining.greaterThan(new Decimal(existing.totalMl.toString()))) {
+        throw new Error(`Remaining cannot exceed the bottle's total fill of ${existing.totalMl}ml.`);
+      }
+
       const diff = newRemaining.minus(oldRemaining);
 
-      // Auto-detect if the bottle should be marked EMPTY
-      const newStatus =
-        newRemaining.lessThanOrEqualTo(0.5)
-          ? SourceBottleStatus.EMPTY
-          : existing.status;
+      // Auto-detect if the bottle should be marked EMPTY (or re-activated after a recount)
+      const newStatus = newRemaining.lessThanOrEqualTo(0.5)
+        ? SourceBottleStatus.EMPTY
+        : existing.status === SourceBottleStatus.EMPTY
+        ? SourceBottleStatus.ACTIVE
+        : existing.status;
 
       const updated = await tx.sourceBottle.update({
         where: { id: sourceBottleId },
@@ -315,11 +329,12 @@ export async function getProductsForDropdownAction() {
     await requirePermission(Permission.INVENTORY_READ);
 
     const products = await prisma.product.findMany({
-      where: { active: true },
       select: {
         id: true,
         name: true,
+        active: true,
         brand: { select: { name: true } },
+        variants: { where: { format: "FULL_BOTTLE" }, select: { volumeMl: true }, take: 1 },
       },
       orderBy: [{ brand: { name: "asc" } }, { name: "asc" }],
     });
@@ -328,11 +343,71 @@ export async function getProductsForDropdownAction() {
       success: true,
       data: products.map((p) => ({
         id: p.id,
-        label: `${p.brand.name} — ${p.name}`,
+        label: `${p.brand.name} — ${p.name}${p.active ? "" : " (archived)"}`,
+        defaultVolumeMl: p.variants[0]?.volumeMl.toString() ?? "",
       })),
     };
   } catch (error: unknown) {
     const message = error instanceof Error ? error.message : "Failed to load products.";
-    return { success: false, error: message, data: [] as { id: string; label: string }[] };
+    return { success: false, error: message, data: [] as { id: string; label: string; defaultVolumeMl: string }[] };
+  }
+}
+
+// ─── Add an already-opened Source Bottle directly ───────────────
+// For bottles bought partially used, or stock that was opened before
+// the system was in use.
+export async function addSourceBottleAction(data: {
+  productId: string;
+  totalMl: number;
+  remainingMl: number;
+  costBasis: number;
+  batchRef?: string;
+  notes?: string;
+}) {
+  try {
+    const admin = await requirePermission(Permission.INVENTORY_FILL);
+
+    if (!data.productId) throw new Error("Please select a product.");
+    if (!Number.isFinite(data.totalMl) || data.totalMl <= 0) throw new Error("Enter the bottle's full size in ml.");
+    if (!Number.isFinite(data.remainingMl) || data.remainingMl <= 0) throw new Error("Enter how many ml are left in the bottle.");
+    if (data.remainingMl > data.totalMl) throw new Error("Remaining ml cannot be more than the bottle size.");
+    if (!Number.isFinite(data.costBasis) || data.costBasis < 0) throw new Error("Enter a valid bottle cost (0 or more).");
+
+    const total = new Decimal(data.totalMl);
+    const costPerMl = new Decimal(data.costBasis).dividedBy(total);
+
+    const bottle = await prisma.$transaction(async (tx) => {
+      const b = await tx.sourceBottle.create({
+        data: {
+          productId: data.productId,
+          batchRef: data.batchRef?.trim() || null,
+          totalMl: total.toFixed(3),
+          remainingMl: new Decimal(data.remainingMl).toFixed(3),
+          reservedMl: "0",
+          costBasis: new Decimal(data.costBasis).toFixed(2),
+          costPerMl: costPerMl.toFixed(4),
+          status: SourceBottleStatus.ACTIVE,
+          notes: data.notes?.trim() || "Added directly as an open decant bottle",
+        },
+      });
+      await tx.stockMovement.create({
+        data: {
+          type: StockMovementType.RECEIVE,
+          sourceBottleId: b.id,
+          quantityMl: new Decimal(data.remainingMl).toFixed(3),
+          referenceId: b.id,
+          referenceType: "SourceBottle",
+          note: `Added open decant bottle: ${data.remainingMl}ml of ${data.totalMl}ml (Batch: ${data.batchRef || "N/A"})`,
+          createdByUserId: admin.id,
+        },
+      });
+      return b;
+    });
+
+    revalidateInventory();
+    return { success: true, data: { id: bottle.id } };
+  } catch (error: unknown) {
+    const message = error instanceof Error ? error.message : "Failed to add source bottle.";
+    return { success: false, error: message };
   }
 }

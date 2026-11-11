@@ -39,25 +39,23 @@ export async function getStorefrontProducts(options: CatalogFilterOptions = {}) 
   const where: Prisma.ProductWhereInput = {
     active: true,
   };
+  const and: Prisma.ProductWhereInput[] = [];
 
   // Search by name, description, or notes
   if (search && search.trim() !== "") {
-    where.OR = [
+    and.push({ OR: [
       { name: { contains: search.trim(), mode: "insensitive" } },
       { description: { contains: search.trim(), mode: "insensitive" } },
       { topNotes: { contains: search.trim(), mode: "insensitive" } },
       { middleNotes: { contains: search.trim(), mode: "insensitive" } },
       { baseNotes: { contains: search.trim(), mode: "insensitive" } },
       { brand: { name: { contains: search.trim(), mode: "insensitive" } } },
-    ];
+    ] });
   }
 
-  // Format filter (DECANT, FULL_BOTTLE, or BOTH)
+  // Format filter: product must actually sell that format
   if (format) {
-    where.OR = [
-      { format },
-      { format: ProductFormat.BOTH },
-    ];
+    and.push({ variants: { some: { format, active: true } } });
   }
 
   // Brand filter
@@ -91,7 +89,7 @@ export async function getStorefrontProducts(options: CatalogFilterOptions = {}) 
 
   // Price range (filtering through variants)
   if (minPrice !== undefined || maxPrice !== undefined) {
-    where.variants = {
+    and.push({ variants: {
       some: {
         active: true,
         AND: [
@@ -99,16 +97,19 @@ export async function getStorefrontProducts(options: CatalogFilterOptions = {}) 
           maxPrice !== undefined ? { price: { lte: maxPrice } } : {},
         ],
       },
-    };
+    } });
   }
+  if (and.length) where.AND = and;
 
-  // Sorting
-  let orderBy: Prisma.ProductOrderByWithRelationInput = { createdAt: "desc" };
+  // Sorting (price sorts are done in memory below — Prisma can't order by min(variant.price))
+  const sortByPrice = sortBy === "price_asc" || sortBy === "price_desc";
+  let orderBy: Prisma.ProductOrderByWithRelationInput[] = [{ createdAt: "desc" }];
   if (sortBy === "featured") {
-    orderBy = { position: "asc" };
+    orderBy = [{ featured: "desc" }, { position: "asc" }, { createdAt: "desc" }];
   }
 
-  const skip = (Math.max(1, page) - 1) * pageSize;
+  const safePage = Math.max(1, Number.isFinite(page) ? page : 1);
+  const skip = (safePage - 1) * pageSize;
 
   try {
     const [products, totalCount] = await Promise.all([
@@ -133,8 +134,7 @@ export async function getStorefrontProducts(options: CatalogFilterOptions = {}) 
           },
         },
         orderBy,
-        skip,
-        take: pageSize,
+        ...(sortByPrice ? {} : { skip, take: pageSize }),
       }),
       prisma.product.count({ where }),
     ]);
@@ -184,14 +184,24 @@ export async function getStorefrontProducts(options: CatalogFilterOptions = {}) 
         hasFullBottles: fullBottleVariants.length > 0 && totalSealedUnits > 0,
         totalAvailableMl: totalAvailableMl.toNumber(),
         totalSealedUnits,
+        featured: product.featured,
+        minPrice: product.variants.length ? Number(product.variants[0].price) : null,
       };
     });
 
+    let pageItems = formatted;
+    if (sortByPrice) {
+      const dir = sortBy === "price_asc" ? 1 : -1;
+      pageItems = [...formatted]
+        .sort((a, b) => ((a.minPrice ?? Infinity) - (b.minPrice ?? Infinity)) * dir)
+        .slice(skip, skip + pageSize);
+    }
+
     return {
-      products: formatted,
+      products: pageItems,
       totalCount,
       totalPages: Math.ceil(totalCount / pageSize),
-      currentPage: page,
+      currentPage: safePage,
     };
   } catch (error) {
     console.error("Error fetching storefront products:", error);

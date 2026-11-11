@@ -445,6 +445,20 @@ model ProductImage {
   @@map("product_images")
 }
 
+// Uploaded image binaries (used when no S3/R2 bucket is configured).
+// Served publicly via /api/media/[id].
+model MediaAsset {
+  id        String   @id @default(cuid())
+  mimeType  String
+  data      Bytes
+  sizeBytes Int
+  width     Int?
+  height    Int?
+  createdAt DateTime @default(now())
+
+  @@map("media_assets")
+}
+
 // ==================================================
 // INVENTORY
 // ==================================================

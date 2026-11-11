@@ -10,6 +10,8 @@ import {
   PaymentStatus,
   PaymentVerificationStatus,
   FulfillmentStatus,
+  ReservationStatus,
+  StockMovementType,
 } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 
@@ -23,8 +25,65 @@ export async function updateOrderStatus(orderId: string, toStatus: OrderStatus, 
   if (!order) {
     throw new Error("Order not found");
   }
+  if (order.status === toStatus) return { success: true };
+  if (order.status === OrderStatus.CANCELLED) {
+    throw new Error("This order is cancelled and its stock has been released. It cannot be reopened.");
+  }
 
   await prisma.$transaction(async (tx) => {
+    // Cancelling returns all still-reserved stock to inventory
+    if (toStatus === OrderStatus.CANCELLED) {
+      const reservations = await tx.stockReservation.findMany({
+        where: { status: ReservationStatus.ACTIVE, orderItem: { orderId } },
+      });
+      for (const r of reservations) {
+        await tx.stockReservation.update({
+          where: { id: r.id },
+          data: { status: ReservationStatus.RELEASED, releasedAt: new Date() },
+        });
+        await tx.sourceBottle.update({
+          where: { id: r.sourceBottleId },
+          data: { reservedMl: { decrement: r.volumeMl } },
+        });
+        await tx.stockMovement.create({
+          data: {
+            type: StockMovementType.UNRESERVE,
+            sourceBottleId: r.sourceBottleId,
+            quantityMl: r.volumeMl,
+            orderId,
+            referenceId: r.id,
+            referenceType: "StockReservation",
+            note: `Released ${r.volumeMl}ml — Order ${order.orderNumber} cancelled`,
+            createdByUserId: user.id,
+          },
+        });
+      }
+
+      // Sealed bottles were decremented at checkout; put them back unless already shipped
+      const shippedStates: OrderStatus[] = [OrderStatus.SHIPPED, OrderStatus.DELIVERED];
+      if (!shippedStates.includes(order.status)) {
+        const sealedReserves = await tx.stockMovement.findMany({
+          where: { orderId, type: StockMovementType.RESERVE, sealedBottleId: { not: null } },
+        });
+        for (const m of sealedReserves) {
+          await tx.sealedBottle.update({
+            where: { id: m.sealedBottleId! },
+            data: { quantity: { increment: m.quantityUnits ?? 0 } },
+          });
+          await tx.stockMovement.create({
+            data: {
+              type: StockMovementType.UNRESERVE,
+              sealedBottleId: m.sealedBottleId,
+              quantityUnits: m.quantityUnits,
+              orderId,
+              note: `Returned ${m.quantityUnits} sealed bottle(s) to stock — Order ${order.orderNumber} cancelled`,
+              createdByUserId: user.id,
+            },
+          });
+        }
+      }
+    }
+
     await tx.order.update({
       where: { id: orderId },
       data: {
@@ -35,6 +94,9 @@ export async function updateOrderStatus(orderId: string, toStatus: OrderStatus, 
             : toStatus === OrderStatus.CANCELLED
             ? FulfillmentStatus.UNFULFILLED
             : order.fulfillmentStatus,
+        ...(toStatus === OrderStatus.CANCELLED
+          ? { cancelledAt: new Date(), cancelReason: note || "Cancelled by staff" }
+          : {}),
       },
     });
 
@@ -47,10 +109,11 @@ export async function updateOrderStatus(orderId: string, toStatus: OrderStatus, 
         userId: user.id,
       },
     });
-  });
+  }, { timeout: 30000, maxWait: 10000 });
 
   revalidatePath(`/admin/orders/${orderId}`);
   revalidatePath("/admin/orders");
+  revalidatePath("/admin/inventory");
   revalidatePath("/admin");
   return { success: true };
 }

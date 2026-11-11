@@ -5,6 +5,8 @@ import { Footer } from "@/components/storefront/Footer";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { getCurrentUser } from "@/lib/auth-helpers";
+import { getStorefrontProducts } from "@/lib/catalog";
+import { ProductCard } from "@/components/storefront/ProductCard";
 import {
   Droplet,
   Package,
@@ -17,7 +19,14 @@ import {
 } from "lucide-react";
 
 export default async function HomePage() {
-  const currentUser = await getCurrentUser();
+  const [currentUser, featured, newest] = await Promise.all([
+    getCurrentUser(),
+    getStorefrontProducts({ sortBy: "featured", pageSize: 4 }),
+    getStorefrontProducts({ sortBy: "newest", pageSize: 8 }),
+  ]);
+  const featuredProducts = featured.products.filter((p) => p.featured);
+  const showcase = featuredProducts.length > 0 ? featuredProducts : newest.products.slice(0, 4);
+  const newArrivals = newest.products.filter((p) => !showcase.some((s) => s.id === p.id)).slice(0, 4);
 
   const fragranceFamilies = [
     { name: "Fresh & Citrus", desc: "Zesty bergamot, aquatic, and lively clean notes", href: "/products?family=FRESH" },
@@ -105,6 +114,48 @@ export default async function HomePage() {
             </div>
           </div>
         </section>
+
+        {/* Featured / Best Sellers */}
+        {showcase.length > 0 && (
+          <section className="py-14 sm:py-16 bg-[var(--background)] border-b border-[var(--border-subtle)]">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+              <div className="flex items-end justify-between gap-4">
+                <div>
+                  <h2 className="text-2xl sm:text-3xl font-bold text-[var(--text-strong)]">
+                    {featuredProducts.length > 0 ? "Featured Fragrances" : "Shop Fragrances"}
+                  </h2>
+                  <p className="text-sm text-[var(--text-secondary)] mt-1">Hand-picked scents, available as decants and full bottles.</p>
+                </div>
+                <Link href="/products" className="text-sm font-semibold text-[var(--primary)] hover:underline inline-flex items-center gap-1 shrink-0">
+                  View all <ArrowRight className="h-4 w-4" />
+                </Link>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {showcase.map((p) => (
+                  <ProductCard key={p.id} product={p} />
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
+
+        {newArrivals.length > 0 && (
+          <section className="py-14 sm:py-16 bg-[var(--surface)] border-b border-[var(--border-subtle)]">
+            <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 space-y-8">
+              <div className="flex items-end justify-between gap-4">
+                <h2 className="text-2xl sm:text-3xl font-bold text-[var(--text-strong)]">New Arrivals</h2>
+                <Link href="/products?sort=newest" className="text-sm font-semibold text-[var(--primary)] hover:underline inline-flex items-center gap-1 shrink-0">
+                  See more <ArrowRight className="h-4 w-4" />
+                </Link>
+              </div>
+              <div className="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-6">
+                {newArrivals.map((p) => (
+                  <ProductCard key={p.id} product={p} />
+                ))}
+              </div>
+            </div>
+          </section>
+        )}
 
         {/* What is a Decant? Section */}
         <section className="py-16 sm:py-20 bg-[var(--surface)] border-b border-[var(--border-subtle)]">

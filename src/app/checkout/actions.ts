@@ -2,7 +2,8 @@
 
 import { prisma } from "@/lib/prisma";
 import { validateCart } from "@/lib/cart";
-import { generateOrderNumber } from "@/lib/utils";
+import { generateOrderNumber, formatVolume } from "@/lib/utils";
+import Decimal from "decimal.js";
 import { reserveLiquidForOrderItem } from "@/lib/inventory";
 import { getCurrentUser } from "@/lib/auth-helpers";
 import {
@@ -111,19 +112,32 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       return { success: false, error: "Your cart is empty. Please add items to proceed." };
     }
 
-    // Check availability
+    // Check availability (compare against what the customer actually asked for)
     for (const item of cartSummary.items) {
-      if (!item.inStock || item.quantity > item.maxQty) {
+      const requested = input.items.find((i) => i.variantId === item.variantId)?.quantity ?? item.quantity;
+      if (!item.inStock || requested > item.maxQty) {
         return {
           success: false,
-          error: `Sorry, only ${item.maxQty} of "${item.productName} (${item.volumeMl}ml)" is currently available.`,
+          error: item.inStock
+            ? `Sorry, only ${item.maxQty} of "${item.productName} (${formatVolume(item.volumeMl)})" is available. Please update your cart.`
+            : `Sorry, "${item.productName} (${formatVolume(item.volumeMl)})" just went out of stock. Please remove it from your cart.`,
         };
       }
     }
+    if (input.items.length !== cartSummary.items.length) {
+      return {
+        success: false,
+        error: "Some items in your cart are no longer available. Please review your cart.",
+      };
+    }
+    if (input.couponCode?.trim() && cartSummary.couponError) {
+      return { success: false, error: cartSummary.couponError };
+    }
 
     // 3. Customer Resolution
+    // Only a logged-in *customer* owns the order (an admin session must not be used as customerId)
     const currentUser = await getCurrentUser();
-    let customerId: string | null = currentUser?.id || null;
+    let customerId: string | null = currentUser?.type === "customer" ? currentUser.id : null;
 
     if (!customerId) {
       // Find or create customer by phone
@@ -133,11 +147,15 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       if (existingCustomer) {
         customerId = existingCustomer.id;
       } else {
+        // email is unique — don't fail checkout if another account already uses it
+        const emailTaken = email
+          ? await prisma.customer.findUnique({ where: { email }, select: { id: true } })
+          : null;
         const newCustomer = await prisma.customer.create({
           data: {
             name,
             phone,
-            email,
+            email: emailTaken ? null : email,
           },
         });
         customerId = newCustomer.id;
@@ -161,7 +179,12 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
     }
 
     // 5. Unique Order Number & Unguessable Tracking Token
-    const orderNumber = generateOrderNumber();
+    const yearPrefix = `SC-${new Date().getFullYear()}-`;
+    let seq = (await prisma.order.count({ where: { orderNumber: { startsWith: yearPrefix } } })) + 1;
+    let orderNumber = generateOrderNumber(seq);
+    while (await prisma.order.findUnique({ where: { orderNumber }, select: { id: true } })) {
+      orderNumber = generateOrderNumber(++seq);
+    }
     const trackingToken = crypto.randomUUID();
 
     const paymentStatus =
@@ -222,36 +245,80 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
           },
         });
 
-        // Reserve stock
+        // Reserve stock — inside this same transaction so a failure rolls back the whole order
         if (item.format === ProductFormat.DECANT && item.volumeMl) {
           const totalMlToReserve = item.volumeMl.mul(item.quantity);
-          await reserveLiquidForOrderItem({
-            orderItemId: orderItem.id,
-            productId: item.productId,
-            variantId: item.variantId,
-            volumeMl: totalMlToReserve,
+          await reserveLiquidForOrderItem(
+            {
+              orderItemId: orderItem.id,
+              productId: item.productId,
+              variantId: item.variantId,
+              volumeMl: totalMlToReserve,
+              productName: item.productName,
+              // hold for 7 days; staff fill decants after confirming the order
+              expiresInMinutes: 60 * 24 * 7,
+            },
+            tx
+          );
+        } else {
+          // Take sealed units of the matching bottle size, oldest stock first
+          const lots = await tx.sealedBottle.findMany({
+            where: {
+              productId: item.productId,
+              quantity: { gt: 0 },
+              ...(item.volumeMl ? { volumeMl: new Decimal(item.volumeMl).toFixed(2) } : {}),
+            },
+            orderBy: { createdAt: "asc" },
           });
-        } else if (item.format === ProductFormat.FULL_BOTTLE) {
-          // Reserve discrete sealed bottle units
-          const sealedBottle = await tx.sealedBottle.findFirst({
-            where: { productId: item.productId, quantity: { gte: item.quantity } },
-          });
-          if (sealedBottle) {
-            await tx.sealedBottle.update({
-              where: { id: sealedBottle.id },
-              data: { quantity: { decrement: item.quantity } },
+          let needed = item.quantity;
+          for (const lot of lots) {
+            if (needed <= 0) break;
+            const take = Math.min(needed, lot.quantity);
+            // conditional decrement guards against a concurrent order taking the same units
+            const updated = await tx.sealedBottle.updateMany({
+              where: { id: lot.id, quantity: { gte: take } },
+              data: { quantity: { decrement: take } },
             });
+            if (updated.count === 0) continue;
+            needed -= take;
             await tx.stockMovement.create({
               data: {
                 type: StockMovementType.RESERVE,
-                sealedBottleId: sealedBottle.id,
-                quantityUnits: item.quantity,
+                sealedBottleId: lot.id,
+                quantityUnits: take,
                 orderId: newOrder.id,
-                note: `Reserved ${item.quantity} sealed bottle(s) for Order ${orderNumber}`,
+                referenceId: orderItem.id,
+                referenceType: "OrderItem",
+                note: `Reserved ${take} sealed bottle(s) for Order ${orderNumber}`,
               },
             });
           }
+          if (needed > 0) {
+            throw new Error(
+              `Sorry, "${item.productName}" (${formatVolume(item.volumeMl)}) just sold out. Please update your cart.`
+            );
+          }
         }
+      }
+
+      // Record coupon usage
+      if (cartSummary.couponId && cartSummary.discount.gt(0)) {
+        await tx.order.update({
+          where: { id: newOrder.id },
+          data: { couponId: cartSummary.couponId, couponCode: cartSummary.couponCode },
+        });
+        await tx.couponRedemption.create({
+          data: {
+            couponId: cartSummary.couponId,
+            orderId: newOrder.id,
+            customerId,
+            discountAmount: cartSummary.discount,
+          },
+        });
+        await tx.coupon.update({
+          where: { id: cartSummary.couponId },
+          data: { timesUsed: { increment: 1 } },
+        });
       }
 
       // Create Payment Record
@@ -288,10 +355,12 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
       });
 
       return newOrder;
-    });
+    }, { timeout: 30000, maxWait: 10000 });
 
     revalidatePath("/admin/orders");
     revalidatePath("/admin/inventory");
+    revalidatePath("/admin");
+    for (const item of cartSummary.items) revalidatePath(`/products/${item.slug}`);
 
     return {
       success: true,
@@ -301,7 +370,8 @@ export async function placeOrder(input: PlaceOrderInput): Promise<PlaceOrderResu
     };
   } catch (err: unknown) {
     console.error("[placeOrder error]", err);
-    const message = err instanceof Error ? err.message : "An unexpected error occurred while placing your order.";
+    let message = "An unexpected error occurred while placing your order. Please try again.";
+    if (err instanceof Error && err.message.startsWith("Sorry,")) message = err.message;
     return {
       success: false,
       error: message,

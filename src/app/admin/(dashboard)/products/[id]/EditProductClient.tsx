@@ -9,7 +9,14 @@ import {
   updateVariantAction,
   deleteVariantAction,
   toggleProductActiveAction,
+  deleteProductAction,
+  addProductImageAction,
+  deleteProductImageAction,
+  setPrimaryImageAction,
+  reorderProductImagesAction,
+  updateImageAltAction,
 } from "../actions";
+import { ImageGalleryEditor, type ManagedImage } from "@/components/admin/ImageUploader";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
 import { AlertCircle, CheckCircle, Plus, Trash2, Pencil, ExternalLink, Package, Droplet } from "lucide-react";
@@ -92,6 +99,9 @@ function Feedback({ type, message }: { type: "success" | "error"; message: strin
 function VariantRow({ variant, onRefresh }: { variant: VariantData; onRefresh: () => void }) {
   const [editing, setEditing] = useState(false);
   const [isPending, startTransition] = useTransition();
+  const [format, setFormat] = useState<"DECANT" | "FULL_BOTTLE">(variant.format === "FULL_BOTTLE" ? "FULL_BOTTLE" : "DECANT");
+  const [volumeMl, setVolumeMl] = useState(variant.volumeMl);
+  const [sku, setSku] = useState(variant.sku);
   const [price, setPrice] = useState(variant.price);
   const [compareAtPrice, setCompareAtPrice] = useState(variant.compareAtPrice);
   const [packagingNote, setPackagingNote] = useState(variant.packagingNote);
@@ -99,12 +109,19 @@ function VariantRow({ variant, onRefresh }: { variant: VariantData; onRefresh: (
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(null);
 
   const save = () => {
+    const p = parseFloat(price);
+    const vol = parseFloat(volumeMl);
+    if (!Number.isFinite(p) || p < 0) { setFeedback({ type: "error", message: "Enter a valid price." }); return; }
+    if (!Number.isFinite(vol) || vol <= 0) { setFeedback({ type: "error", message: "Enter a valid volume." }); return; }
     startTransition(async () => {
       const res = await updateVariantAction(variant.id, {
-        price: parseFloat(price),
+        price: p,
         compareAtPrice: compareAtPrice ? parseFloat(compareAtPrice) : undefined,
         active,
         packagingNote,
+        volumeMl: vol,
+        format,
+        sku,
       });
       if (res.success) {
         setFeedback({ type: "success", message: "Saved!" });
@@ -144,10 +161,10 @@ function VariantRow({ variant, onRefresh }: { variant: VariantData; onRefresh: (
           <Badge variant={variant.active ? "success" : "default"}>{variant.active ? "Active" : "Hidden"}</Badge>
         </div>
         <div className="flex items-center gap-1">
-          <button onClick={() => setEditing(!editing)} className="p-1.5 rounded hover:bg-[var(--surface-subtle)] text-[var(--text-secondary)]">
+          <button type="button" title="Edit variant" onClick={() => setEditing(!editing)} className="p-1.5 rounded hover:bg-[var(--surface-subtle)] text-[var(--text-secondary)]">
             <Pencil className="h-3.5 w-3.5" />
           </button>
-          <button onClick={remove} disabled={isPending} className="p-1.5 rounded hover:bg-[var(--surface-subtle)] text-[var(--text-secondary)] hover:text-[var(--status-error)]">
+          <button type="button" title="Delete variant" onClick={remove} disabled={isPending} className="p-1.5 rounded hover:bg-[var(--surface-subtle)] text-[var(--text-secondary)] hover:text-[var(--status-error)]">
             <Trash2 className="h-3.5 w-3.5" />
           </button>
         </div>
@@ -157,6 +174,20 @@ function VariantRow({ variant, onRefresh }: { variant: VariantData; onRefresh: (
 
       {editing && (
         <div className="space-y-3 pt-2 border-t border-[var(--border-subtle)]">
+          <div className="grid grid-cols-2 sm:grid-cols-3 gap-3">
+            <Field label="Type">
+              <select value={format} onChange={(e) => setFormat(e.target.value as "DECANT" | "FULL_BOTTLE")} className={selectClass}>
+                <option value="DECANT">Decant</option>
+                <option value="FULL_BOTTLE">Full Bottle</option>
+              </select>
+            </Field>
+            <Field label="Volume (ml)" required>
+              <input type="number" step="0.5" min="0.5" value={volumeMl} onChange={(e) => setVolumeMl(e.target.value)} className={inputClass} />
+            </Field>
+            <Field label="SKU">
+              <input type="text" value={sku} onChange={(e) => setSku(e.target.value)} className={inputClass} />
+            </Field>
+          </div>
           <div className="grid grid-cols-2 gap-3">
             <Field label="Price ৳" required>
               <input type="number" step="1" min="0" value={price} onChange={(e) => setPrice(e.target.value)} className={inputClass} />
@@ -205,6 +236,74 @@ export function EditProductClient({ product: initial, brands }: { product: Produ
   const [metaTitle, setMetaTitle] = useState(initial.metaTitle);
   const [metaDescription, setMetaDescription] = useState(initial.metaDescription);
 
+  // Images
+  const [images, setImages] = useState<ManagedImage[]>(initial.images);
+  const [imageBusy, setImageBusy] = useState(false);
+
+  const imgCall = async (fn: () => Promise<{ success: boolean; error?: string }>) => {
+    setImageBusy(true);
+    try {
+      const res = await fn();
+      if (!res.success) {
+        setFeedback({ type: "error", message: res.error || "Image action failed." });
+        return false;
+      }
+      return true;
+    } finally {
+      setImageBusy(false);
+    }
+  };
+
+  const onAddImage = async (url: string) => {
+    const res = await addProductImageAction(initial.id, url, name);
+    if (!res.success || !res.data) throw new Error(res.error || "Failed to save image.");
+    const saved: ManagedImage = res.data;
+    setImages((prev) => [...prev, saved]);
+    return saved;
+  };
+  const onDeleteImage = async (img: ManagedImage) => {
+    if (!(await imgCall(() => deleteProductImageAction(img.id)))) return;
+    setImages((prev) => {
+      const rest = prev.filter((i) => i.id !== img.id);
+      if (img.isPrimary && rest.length && !rest.some((i) => i.isPrimary)) {
+        rest[0] = { ...rest[0], isPrimary: true }; // mirror server: next image becomes cover
+      }
+      return rest;
+    });
+  };
+  const onSetPrimary = async (img: ManagedImage) => {
+    if (await imgCall(() => setPrimaryImageAction(img.id))) {
+      setImages((prev) => prev.map((i) => ({ ...i, isPrimary: i.id === img.id })));
+    }
+  };
+  const onReorder = async (ordered: ManagedImage[]) => {
+    const before = images;
+    setImages(ordered);
+    if (!(await imgCall(() => reorderProductImagesAction(initial.id, ordered.map((i) => i.id))))) setImages(before);
+  };
+  const onAltChange = async (img: ManagedImage, alt: string) => {
+    if (await imgCall(() => updateImageAltAction(img.id, alt))) {
+      setImages((prev) => prev.map((i) => (i.id === img.id ? { ...i, altText: alt } : i)));
+    }
+  };
+
+  const deleteProduct = () => {
+    if (!confirm(`Delete "${initial.name}"?\n\nIf it has orders or stock records it will be archived instead.`)) return;
+    startTransition(async () => {
+      const res = await deleteProductAction(initial.id);
+      if (!res.success) {
+        setFeedback({ type: "error", message: res.error || "Failed to delete product." });
+        return;
+      }
+      if (res.archived) {
+        setActive(false);
+        setFeedback({ type: "success", message: res.message || "Product archived." });
+      } else {
+        router.push("/admin/products");
+      }
+    });
+  };
+
   // New variant state
   const [addingVariant, setAddingVariant] = useState(false);
   const [newVFormat, setNewVFormat] = useState<"DECANT" | "FULL_BOTTLE">("DECANT");
@@ -223,6 +322,7 @@ export function EditProductClient({ product: initial, brands }: { product: Produ
       if (res.success) {
         setFeedback({ type: "success", message: "Product details saved!" });
         setTimeout(() => setFeedback(null), 4000);
+        router.refresh();
       } else {
         setFeedback({ type: "error", message: res.error || "Failed to save." });
       }
@@ -236,12 +336,14 @@ export function EditProductClient({ product: initial, brands }: { product: Produ
         setActive(!active);
         setFeedback({ type: "success", message: active ? "Product archived (hidden from storefront)." : "Product published to storefront!" });
         setTimeout(() => setFeedback(null), 4000);
+      } else {
+        setFeedback({ type: "error", message: res.error || "Failed to change status." });
       }
     });
   };
 
   const submitNewVariant = () => {
-    if (!newVVolume || !newVPrice) { setFeedback({ type: "error", message: "Volume and price are required for new variant." }); return; }
+    if (!(parseFloat(newVVolume) > 0) || !(parseFloat(newVPrice) >= 0)) { setFeedback({ type: "error", message: "Volume and price are required for new variant." }); return; }
     startTransition(async () => {
       const res = await addVariantAction(initial.id, {
         format: newVFormat,
@@ -254,7 +356,8 @@ export function EditProductClient({ product: initial, brands }: { product: Produ
         setAddingVariant(false);
         setNewVVolume(""); setNewVPrice(""); setNewVCompare(""); setNewVPacking("");
         setFeedback({ type: "success", message: "Variant added!" });
-        setTimeout(() => { setFeedback(null); router.refresh(); }, 1000);
+        router.refresh();
+        setTimeout(() => setFeedback(null), 3000);
       } else {
         setFeedback({ type: "error", message: res.error || "Failed to add variant." });
       }
@@ -281,6 +384,22 @@ export function EditProductClient({ product: initial, brands }: { product: Produ
         </div>
       </div>
 
+      {/* Images */}
+      <div className="space-y-2">
+        <h2 className="text-base font-bold text-[var(--text-strong)]">📷 Product Images</h2>
+        <p className="text-xs text-[var(--text-muted)]">Changes save instantly. The cover image is shown on product cards.</p>
+        <ImageGalleryEditor
+          images={images}
+          busy={imageBusy}
+          onAdd={onAddImage}
+          onDelete={onDeleteImage}
+          onSetPrimary={onSetPrimary}
+          onReorder={onReorder}
+          onAltChange={onAltChange}
+        />
+      </div>
+
+      <SectionTitle>📝 Details</SectionTitle>
       {/* Basic info */}
       <div className="grid grid-cols-1 sm:grid-cols-2 gap-4">
         <Field label="Product Name" required>
@@ -440,6 +559,17 @@ export function EditProductClient({ product: initial, brands }: { product: Produ
         <Link href="/admin/inventory">
           <Button size="sm" variant="secondary">Open Inventory</Button>
         </Link>
+      </div>
+
+      {/* Danger zone */}
+      <SectionTitle>⚠️ Danger Zone</SectionTitle>
+      <div className="p-4 rounded-[var(--radius-md)] border border-[var(--status-error-border)] bg-[var(--status-error-bg)] flex items-center justify-between gap-4">
+        <div className="text-sm text-[var(--text-secondary)]">
+          Delete this product. Products with orders or stock records are archived instead so your history stays intact.
+        </div>
+        <Button size="sm" variant="destructive" onClick={deleteProduct} isLoading={isPending}>
+          <Trash2 className="h-4 w-4" /> Delete
+        </Button>
       </div>
     </div>
   );

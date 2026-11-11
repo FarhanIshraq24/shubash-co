@@ -4,10 +4,13 @@ import { Header } from "@/components/storefront/Header";
 import { Footer } from "@/components/storefront/Footer";
 import { ProductCard } from "@/components/storefront/ProductCard";
 import { Button } from "@/components/ui/button";
-import { getStorefrontProducts } from "@/lib/catalog";
+import { getStorefrontProducts, getActiveBrands } from "@/lib/catalog";
 import { getCurrentUser } from "@/lib/auth-helpers";
 import { ProductFormat, FragranceFamily, Gender, Concentration } from "@prisma/client";
 import { X, Droplet, Package, Sparkles } from "lucide-react";
+
+const filterSelect =
+  "w-full h-10 px-2 text-sm rounded-[var(--radius-md)] border border-[var(--border-control)] bg-[var(--surface)] text-[var(--text-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]";
 
 interface ProductsPageProps {
   searchParams: Promise<{
@@ -59,7 +62,16 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
   const sortBy: SortOption = sortValues.includes(params.sort as SortOption)
     ? (params.sort as SortOption)
     : "newest";
-  const currentPage = params.page ? parseInt(params.page, 10) : 1;
+  const currentPage = Math.max(1, parseInt(params.page || "1", 10) || 1);
+
+  const brands = await getActiveBrands();
+
+  const pageHref = (n: number) => {
+    const qs = new URLSearchParams();
+    for (const [k, v] of Object.entries(params)) if (v && k !== "page") qs.set(k, v);
+    qs.set("page", String(n));
+    return `/products?${qs.toString()}`;
+  };
 
   const { products, totalCount, totalPages } = await getStorefrontProducts({
     search: query,
@@ -94,7 +106,7 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
                   : "All Fragrances & Decants"}
               </h1>
               <p className="text-sm text-[var(--text-secondary)] mt-1">
-                Showing {products.length} of {totalCount} authentic scents in stock
+                Showing {products.length} of {totalCount} fragrance{totalCount === 1 ? "" : "s"}
               </p>
             </div>
 
@@ -135,6 +147,47 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
             </div>
           </div>
 
+
+          {/* Filter & Sort Toolbar (plain GET form — works without JavaScript) */}
+          <form method="get" action="/products" className="grid grid-cols-2 md:grid-cols-6 gap-2 pt-4">
+            {format && <input type="hidden" name="format" value={format} />}
+            <input
+              type="search"
+              name="q"
+              defaultValue={query}
+              placeholder="Search perfume, brand or note…"
+              aria-label="Search"
+              className="col-span-2 h-10 px-3 text-sm rounded-[var(--radius-md)] border border-[var(--border-control)] bg-[var(--surface)] text-[var(--text-strong)] focus:outline-none focus:ring-2 focus:ring-[var(--focus-ring)]"
+            />
+            <select name="brand" defaultValue={brandSlug || ""} aria-label="Brand" className={filterSelect}>
+              <option value="">All brands</option>
+              {brands.map((b) => (
+                <option key={b.id} value={b.slug}>{b.name}</option>
+              ))}
+            </select>
+            <select name="family" defaultValue={family || ""} aria-label="Fragrance family" className={filterSelect}>
+              <option value="">All families</option>
+              {["WOODY","FLORAL","ORIENTAL","FRESH","CITRUS","GOURMAND","AQUATIC","FOUGERE","CHYPRE","SPICY","LEATHER","POWDERY","GREEN"].map((f) => (
+                <option key={f} value={f}>{f.charAt(0) + f.slice(1).toLowerCase()}</option>
+              ))}
+            </select>
+            <select name="gender" defaultValue={gender || ""} aria-label="Gender" className={filterSelect}>
+              <option value="">Any gender</option>
+              <option value="MASCULINE">Men</option>
+              <option value="FEMININE">Women</option>
+              <option value="UNISEX">Unisex</option>
+            </select>
+            <div className="flex gap-2">
+              <select name="sort" defaultValue={sortBy} aria-label="Sort by" className={filterSelect}>
+                <option value="newest">Newest</option>
+                <option value="featured">Featured</option>
+                <option value="price_asc">Price: low → high</option>
+                <option value="price_desc">Price: high → low</option>
+              </select>
+              <Button type="submit" variant="primary" size="sm" className="h-10">Apply</Button>
+            </div>
+          </form>
+
           {/* Active Filter Chips & Reset */}
           {hasActiveFilters && (
             <div className="flex flex-wrap items-center gap-2 pt-3">
@@ -152,6 +205,11 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
               {brandSlug && (
                 <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-[var(--surface)] border border-[var(--border-subtle)] text-[var(--text-strong)]">
                   Brand: {brandSlug}
+                </span>
+              )}
+              {gender && (
+                <span className="inline-flex items-center gap-1 px-2.5 py-1 rounded-full text-xs font-semibold bg-[var(--surface)] border border-[var(--border-subtle)] text-[var(--text-strong)]">
+                  Gender: {gender}
                 </span>
               )}
               {family && (
@@ -197,11 +255,7 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
         {totalPages > 1 && (
           <div className="flex items-center justify-center gap-3 pt-12 border-t border-[var(--border-subtle)] mt-12">
             {currentPage > 1 && (
-              <Link
-                href={`/products?page=${currentPage - 1}${format ? `&format=${format}` : ""}${
-                  brandSlug ? `&brand=${brandSlug}` : ""
-                }`}
-              >
+              <Link href={pageHref(currentPage - 1)}>
                 <Button variant="secondary" size="sm">
                   Previous Page
                 </Button>
@@ -211,11 +265,7 @@ export default async function ProductsPage({ searchParams }: ProductsPageProps) 
               Page {currentPage} of {totalPages}
             </span>
             {currentPage < totalPages && (
-              <Link
-                href={`/products?page=${currentPage + 1}${format ? `&format=${format}` : ""}${
-                  brandSlug ? `&brand=${brandSlug}` : ""
-                }`}
-              >
+              <Link href={pageHref(currentPage + 1)}>
                 <Button variant="secondary" size="sm">
                   Next Page
                 </Button>

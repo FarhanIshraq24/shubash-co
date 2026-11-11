@@ -42,6 +42,8 @@ export async function POST(request: NextRequest) {
       freeDeliveryThreshold: summary.freeDeliveryThreshold?.toString() ?? null,
       freeDeliveryEligible: summary.freeDeliveryEligible,
       itemCount: summary.itemCount,
+      couponCode: summary.couponCode,
+      couponError: summary.couponError,
     });
   } catch (err) {
     console.error("[cart/validate]", err);

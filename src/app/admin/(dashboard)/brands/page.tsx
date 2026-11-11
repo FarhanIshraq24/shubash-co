@@ -23,6 +23,7 @@ export default async function AdminBrandsPage() {
     name: b.name,
     slug: b.slug,
     country: b.country,
+    logoUrl: b.logoUrl,
     description: b.description,
     active: b.active,
     productCount: b._count.products,

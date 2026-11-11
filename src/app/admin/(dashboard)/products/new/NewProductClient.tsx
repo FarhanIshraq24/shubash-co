@@ -5,6 +5,7 @@ import { useRouter } from "next/navigation";
 import { createProductAction } from "../actions";
 import { Button } from "@/components/ui/button";
 import { AlertCircle, CheckCircle, Plus, Trash2 } from "lucide-react";
+import { ImageGalleryEditor, type ManagedImage } from "@/components/admin/ImageUploader";
 
 interface Brand { id: string; name: string; }
 
@@ -62,6 +63,9 @@ export function NewProductClient({ brands }: { brands: Brand[] }) {
   const [metaTitle, setMetaTitle] = useState("");
   const [metaDescription, setMetaDescription] = useState("");
 
+  // Images (uploaded immediately, attached to the product on create)
+  const [images, setImages] = useState<ManagedImage[]>([]);
+
   // Variants
   const [variants, setVariants] = useState<VariantDraft[]>([
     { format: "DECANT", volumeMl: "3", price: "", compareAtPrice: "", packagingNote: "Glass atomizer" },
@@ -87,8 +91,12 @@ export function NewProductClient({ brands }: { brands: Brand[] }) {
     if (!brandId) { setError("Please select a brand."); return; }
     if (variants.length === 0) { setError("Add at least one size/price variant."); return; }
     for (const v of variants) {
-      if (!v.volumeMl || parseFloat(v.volumeMl) <= 0) { setError("All variants need a valid volume."); return; }
-      if (!v.price || parseFloat(v.price) < 0) { setError("All variants need a valid price."); return; }
+      if (!(parseFloat(v.volumeMl) > 0)) { setError("All variants need a valid volume."); return; }
+      if (!(parseFloat(v.price) >= 0)) { setError("All variants need a valid price."); return; }
+      if (v.compareAtPrice && parseFloat(v.compareAtPrice) <= parseFloat(v.price)) {
+        setError("Compare-at price must be higher than the selling price (it is shown crossed out).");
+        return;
+      }
     }
 
     startTransition(async () => {
@@ -114,6 +122,7 @@ export function NewProductClient({ brands }: { brands: Brand[] }) {
           compareAtPrice: v.compareAtPrice ? parseFloat(v.compareAtPrice) : undefined,
           packagingNote: v.packagingNote || undefined,
         })),
+        images: images.map((img) => ({ url: img.url, altText: img.altText })),
       });
 
       if (res.success && res.data) {
@@ -158,6 +167,32 @@ export function NewProductClient({ brands }: { brands: Brand[] }) {
           <textarea value={description} onChange={(e) => setDescription(e.target.value)} placeholder="Describe the fragrance, its character, and what makes it special…" className={textareaClass} />
         </Field>
       </div>
+
+      {/* Images */}
+      <SectionTitle>📷 Product Images</SectionTitle>
+      <ImageGalleryEditor
+        images={images}
+        onAdd={async (url) => {
+          const img: ManagedImage = { id: `tmp-${Date.now()}-${Math.random()}`, url, altText: name, isPrimary: false };
+          setImages((prev) => {
+            const next = [...prev, img];
+            return next.map((i, idx) => ({ ...i, isPrimary: prev.some((x) => x.isPrimary) ? i.isPrimary : idx === 0 }));
+          });
+          return img;
+        }}
+        onDelete={async (img) =>
+          setImages((prev) => {
+            const rest = prev.filter((i) => i.id !== img.id);
+            if (img.isPrimary && rest.length) rest[0] = { ...rest[0], isPrimary: true };
+            return rest;
+          })
+        }
+        onSetPrimary={async (img) =>
+          // cover image goes first so it is saved as position 0 / primary
+          setImages((prev) => [img, ...prev.filter((i) => i.id !== img.id)].map((i, idx) => ({ ...i, isPrimary: idx === 0 })))
+        }
+        onReorder={async (ordered) => setImages(ordered.map((i, idx) => ({ ...i, isPrimary: idx === 0 })))}
+      />
 
       {/* Fragrance Notes */}
       <SectionTitle>🎵 Fragrance Notes Pyramid</SectionTitle>
@@ -232,7 +267,7 @@ export function NewProductClient({ brands }: { brands: Brand[] }) {
             <div className="flex items-center justify-between">
               <span className="text-xs font-bold text-[var(--text-strong)]">Variant {i + 1}</span>
               {variants.length > 1 && (
-                <button onClick={() => removeVariant(i)} className="p-1 text-[var(--text-muted)] hover:text-[var(--status-error)]">
+                <button type="button" title="Remove variant" onClick={() => removeVariant(i)} className="p-1 text-[var(--text-muted)] hover:text-[var(--status-error)]">
                   <Trash2 className="h-3.5 w-3.5" />
                 </button>
               )}
@@ -260,6 +295,7 @@ export function NewProductClient({ brands }: { brands: Brand[] }) {
           </div>
         ))}
         <button
+          type="button"
           onClick={addVariant}
           className="w-full h-10 rounded-[var(--radius-md)] border-2 border-dashed border-[var(--border-control)] text-sm text-[var(--text-muted)] hover:border-[var(--primary)] hover:text-[var(--primary)] flex items-center justify-center gap-2 transition-colors"
         >

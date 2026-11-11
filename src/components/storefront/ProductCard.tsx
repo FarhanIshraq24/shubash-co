@@ -49,6 +49,12 @@ export function ProductCard({ product }: ProductCardProps) {
           </div>
         )}
 
+        {!product.hasDecants && !product.hasFullBottles && (
+          <span className="absolute right-2.5 top-2.5 rounded bg-[var(--foreground)] px-2 py-0.5 text-[11px] font-bold text-[var(--background)]">
+            Sold out
+          </span>
+        )}
+
         {/* Format Badges */}
         <div className="absolute left-2.5 top-2.5 flex flex-col gap-1.5">
           {product.hasDecants && (

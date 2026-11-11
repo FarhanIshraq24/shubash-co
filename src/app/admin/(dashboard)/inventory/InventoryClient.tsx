@@ -1,6 +1,7 @@
 "use client";
 
 import React, { useState, useTransition, useEffect } from "react";
+import { useRouter } from "next/navigation";
 import { formatBDT, formatVolume, formatDhakaDate } from "@/lib/utils";
 import {
   convertSealedBottleAction,
@@ -10,6 +11,7 @@ import {
   retireSourceBottleAction,
   deleteSealedBottleAction,
   getProductsForDropdownAction,
+  addSourceBottleAction,
 } from "./actions";
 import { Button } from "@/components/ui/button";
 import { Badge } from "@/components/ui/badge";
@@ -82,6 +84,7 @@ interface InventoryClientProps {
 interface ProductOption {
   id: string;
   label: string;
+  defaultVolumeMl: string;
 }
 
 // ─── Reusable Modal Shell ───────────────────────────────────────
@@ -91,12 +94,14 @@ function ModalOverlay({
   onClose,
   title,
   description,
+  error,
   children,
 }: {
   open: boolean;
   onClose: () => void;
   title: string;
   description?: string;
+  error?: string | null;
   children: React.ReactNode;
 }) {
   if (!open) return null;
@@ -118,7 +123,18 @@ function ModalOverlay({
             <X className="h-4 w-4" />
           </button>
         </div>
-        <div className="p-5">{children}</div>
+        <div className="p-5 space-y-4">
+          {error && (
+            <div
+              role="alert"
+              className="p-3 rounded-[var(--radius-md)] border text-sm flex items-start gap-2 bg-[var(--status-error-bg)] border-[var(--status-error-border)] text-[var(--status-error)]"
+            >
+              <AlertCircle className="h-4 w-4 shrink-0 mt-0.5" />
+              <span>{error}</span>
+            </div>
+          )}
+          {children}
+        </div>
       </div>
     </div>
   );
@@ -160,7 +176,9 @@ export function InventoryClient({
   totalAvailableMl,
   totalReservedMl,
 }: InventoryClientProps) {
+  const router = useRouter();
   const [isPending, startTransition] = useTransition();
+  const [modalError, setModalError] = useState<string | null>(null);
   const [feedback, setFeedback] = useState<{ type: "success" | "error"; message: string } | null>(
     null
   );
@@ -173,6 +191,7 @@ export function InventoryClient({
   const [modal, setModal] = useState<
     | null
     | { type: "addSealed" }
+    | { type: "addSource" }
     | { type: "editSealedQty"; bottle: SealedBottleItem }
     | { type: "deleteSealed"; bottle: SealedBottleItem }
     | { type: "convertSealed"; bottle: SealedBottleItem }
@@ -190,6 +209,7 @@ export function InventoryClient({
   const [formNewQuantity, setFormNewQuantity] = useState("");
   const [formReason, setFormReason] = useState("");
   const [formNewRemainingMl, setFormNewRemainingMl] = useState("");
+  const [formTotalMl, setFormTotalMl] = useState("");
 
   // Clear auto-dismiss feedback after 5s
   useEffect(() => {
@@ -200,11 +220,13 @@ export function InventoryClient({
   }, [feedback]);
 
   // Load products for the "Add Sealed" form
+  // Always reload so newly created products show up
   const loadProducts = async () => {
-    if (productsLoaded) return;
     const res = await getProductsForDropdownAction();
     if (res.success && res.data) {
       setProducts(res.data);
+    } else {
+      setModalError(res.error || "Could not load products.");
     }
     setProductsLoaded(true);
   };
@@ -220,11 +242,15 @@ export function InventoryClient({
     setFormNewQuantity("");
     setFormReason("");
     setFormNewRemainingMl("");
+    setFormTotalMl("");
+    setModalError(null);
 
-    if (m.type === "addSealed") {
-      loadProducts();
+    if (m.type === "addSealed" || m.type === "addSource") {
+      void loadProducts();
     } else if (m.type === "editSealedQty") {
       setFormNewQuantity(m.bottle.quantity.toString());
+      setFormCostPerUnit(m.bottle.costPerUnit);
+      setFormBatchRef(m.bottle.batchRef || "");
     } else if (m.type === "adjustSource") {
       setFormNewRemainingMl(m.bottle.remainingMl);
     }
@@ -232,103 +258,123 @@ export function InventoryClient({
     setModal(m);
   };
 
-  const closeModal = () => setModal(null);
+  const closeModal = () => {
+    setModal(null);
+    setModalError(null);
+  };
+
+  /** Run a server action; keep the modal open and show the error inside it on failure. */
+  const run = (
+    action: () => Promise<{ success: boolean; error?: string }>,
+    successMessage: string
+  ) => {
+    setModalError(null);
+    startTransition(async () => {
+      try {
+        const res = await action();
+        if (res.success) {
+          setFeedback({ type: "success", message: successMessage });
+          closeModal();
+          router.refresh();
+        } else {
+          setModalError(res.error || "Something went wrong.");
+        }
+      } catch (e) {
+        setModalError(e instanceof Error ? e.message : "Network error — please try again.");
+      }
+    });
+  };
+
+  const num = (v: string) => (v.trim() === "" ? NaN : Number(v));
 
   // ─── Handlers ──────────────────────────────────────
 
   const handleAddSealed = () => {
-    startTransition(async () => {
-      const res = await addSealedBottleAction({
-        productId: formProductId,
-        volumeMl: parseFloat(formVolumeMl),
-        quantity: parseInt(formQuantity, 10),
-        costPerUnit: parseFloat(formCostPerUnit),
-        batchRef: formBatchRef || undefined,
-        notes: formNotes || undefined,
-      });
-      if (res.success) {
-        setFeedback({ type: "success", message: "Sealed bottle(s) added to inventory!" });
-        closeModal();
-      } else {
-        setFeedback({ type: "error", message: res.error || "Failed to add." });
-      }
-    });
+    if (!formProductId) return setModalError("Please select a product.");
+    if (!(num(formVolumeMl) > 0)) return setModalError("Enter the bottle volume in ml.");
+    if (!(Number.isInteger(num(formQuantity)) && num(formQuantity) > 0)) return setModalError("Quantity must be a whole number of at least 1.");
+    if (!(num(formCostPerUnit) >= 0)) return setModalError("Enter the cost per unit (use 0 if unknown).");
+    run(
+      () =>
+        addSealedBottleAction({
+          productId: formProductId,
+          volumeMl: num(formVolumeMl),
+          quantity: num(formQuantity),
+          costPerUnit: num(formCostPerUnit),
+          batchRef: formBatchRef || undefined,
+          notes: formNotes || undefined,
+        }),
+      "Sealed bottle(s) added to inventory!"
+    );
+  };
+
+  const handleAddSource = () => {
+    if (!formProductId) return setModalError("Please select a product.");
+    if (!(num(formTotalMl) > 0)) return setModalError("Enter the bottle's full size in ml.");
+    if (!(num(formNewRemainingMl) > 0)) return setModalError("Enter how many ml are left.");
+    if (num(formNewRemainingMl) > num(formTotalMl)) return setModalError("Remaining ml cannot exceed the bottle size.");
+    if (!(num(formCostPerUnit) >= 0)) return setModalError("Enter the bottle cost (use 0 if unknown).");
+    run(
+      () =>
+        addSourceBottleAction({
+          productId: formProductId,
+          totalMl: num(formTotalMl),
+          remainingMl: num(formNewRemainingMl),
+          costBasis: num(formCostPerUnit),
+          batchRef: formBatchRef || undefined,
+          notes: formNotes || undefined,
+        }),
+      "Open decant bottle added — it is now available for decant orders."
+    );
   };
 
   const handleUpdateSealedQty = () => {
     if (!modal || modal.type !== "editSealedQty") return;
-    startTransition(async () => {
-      const res = await updateSealedQuantityAction(
-        modal.bottle.id,
-        parseInt(formNewQuantity, 10),
-        formReason
-      );
-      if (res.success) {
-        setFeedback({ type: "success", message: "Sealed bottle quantity updated!" });
-        closeModal();
-      } else {
-        setFeedback({ type: "error", message: res.error || "Failed to update." });
-      }
-    });
+    if (!(Number.isInteger(num(formNewQuantity)) && num(formNewQuantity) >= 0)) return setModalError("Quantity must be a whole number (0 or more).");
+    if (!formReason.trim()) return setModalError("Please enter a reason for the adjustment.");
+    const bottleId = modal.bottle.id;
+    run(
+      () =>
+        updateSealedQuantityAction(bottleId, num(formNewQuantity), formReason, {
+          costPerUnit: num(formCostPerUnit) >= 0 ? num(formCostPerUnit) : undefined,
+          batchRef: formBatchRef,
+        }),
+      "Sealed bottle updated!"
+    );
   };
 
   const handleDeleteSealed = () => {
     if (!modal || modal.type !== "deleteSealed") return;
-    startTransition(async () => {
-      const res = await deleteSealedBottleAction(modal.bottle.id, formReason);
-      if (res.success) {
-        setFeedback({ type: "success", message: "Sealed bottle record deleted." });
-        closeModal();
-      } else {
-        setFeedback({ type: "error", message: res.error || "Failed to delete." });
-      }
-    });
+    if (!formReason.trim()) return setModalError("Please enter a reason for deletion.");
+    const bottleId = modal.bottle.id;
+    run(() => deleteSealedBottleAction(bottleId, formReason), "Sealed bottle record deleted.");
   };
 
   const handleConvert = () => {
     if (!modal || modal.type !== "convertSealed") return;
-    startTransition(async () => {
-      const res = await convertSealedBottleAction(modal.bottle.id, formNotes);
-      if (res.success) {
-        setFeedback({
-          type: "success",
-          message: "Sealed bottle converted into an active decant source bottle!",
-        });
-        closeModal();
-      } else {
-        setFeedback({ type: "error", message: res.error || "Failed to convert." });
-      }
-    });
+    const bottleId = modal.bottle.id;
+    run(
+      () => convertSealedBottleAction(bottleId, formNotes),
+      "Sealed bottle converted into an active decant source bottle!"
+    );
   };
 
   const handleAdjustSource = () => {
     if (!modal || modal.type !== "adjustSource") return;
-    startTransition(async () => {
-      const res = await adjustSourceBottleAction(
-        modal.bottle.id,
-        parseFloat(formNewRemainingMl),
-        formReason
-      );
-      if (res.success) {
-        setFeedback({ type: "success", message: "Source bottle remaining ml adjusted!" });
-        closeModal();
-      } else {
-        setFeedback({ type: "error", message: res.error || "Failed to adjust." });
-      }
-    });
+    if (!(num(formNewRemainingMl) >= 0)) return setModalError("Enter a valid remaining ml.");
+    if (!formReason.trim()) return setModalError("Please enter a reason for the adjustment.");
+    const bottleId = modal.bottle.id;
+    run(
+      () => adjustSourceBottleAction(bottleId, num(formNewRemainingMl), formReason),
+      "Source bottle remaining ml adjusted!"
+    );
   };
 
   const handleRetireSource = () => {
     if (!modal || modal.type !== "retireSource") return;
-    startTransition(async () => {
-      const res = await retireSourceBottleAction(modal.bottle.id, formReason);
-      if (res.success) {
-        setFeedback({ type: "success", message: "Source bottle retired successfully." });
-        closeModal();
-      } else {
-        setFeedback({ type: "error", message: res.error || "Failed to retire." });
-      }
-    });
+    if (!formReason.trim()) return setModalError("Please enter a reason for retiring the bottle.");
+    const bottleId = modal.bottle.id;
+    run(() => retireSourceBottleAction(bottleId, formReason), "Source bottle retired successfully.");
   };
 
   return (
@@ -426,6 +472,10 @@ export function InventoryClient({
               Liquid tracked in exact milliliters. Available = Physical Remaining − Reserved.
             </p>
           </div>
+          <Button variant="secondary" size="sm" onClick={() => openModal({ type: "addSource" })}>
+            <Plus className="h-4 w-4" />
+            <span>Add Open Bottle</span>
+          </Button>
         </div>
 
         {sourceBottles.length === 0 ? (
@@ -680,6 +730,7 @@ export function InventoryClient({
       <ModalOverlay
         open={modal?.type === "addSealed"}
         onClose={closeModal}
+        error={modalError}
         title="Add Sealed Bottles to Inventory"
         description="Record new sealed full bottles received from a supplier or purchase."
       >
@@ -687,10 +738,14 @@ export function InventoryClient({
           <FormField label="Product" required>
             <select
               value={formProductId}
-              onChange={(e) => setFormProductId(e.target.value)}
+              onChange={(e) => {
+                setFormProductId(e.target.value);
+                const opt = products.find((p) => p.id === e.target.value);
+                if (opt?.defaultVolumeMl && !formVolumeMl) setFormVolumeMl(opt.defaultVolumeMl);
+              }}
               className={selectClass}
             >
-              <option value="">— Select a product —</option>
+              <option value="">{productsLoaded ? "— Select a product —" : "Loading products…"}</option>
               {products.map((p) => (
                 <option key={p.id} value={p.id}>
                   {p.label}
@@ -762,11 +817,59 @@ export function InventoryClient({
         </div>
       </ModalOverlay>
 
+      {/* ─── Add Open Source Bottle Modal ─────────────────────── */}
+      <ModalOverlay
+        open={modal?.type === "addSource"}
+        onClose={closeModal}
+        error={modalError}
+        title="Add an Open Decant Bottle"
+        description="Record a bottle that is already open (e.g. bought partly used). Its liquid becomes available for decant orders immediately."
+      >
+        <div className="space-y-4">
+          <FormField label="Product" required>
+            <select value={formProductId} onChange={(e) => setFormProductId(e.target.value)} className={selectClass}>
+              <option value="">{productsLoaded ? "— Select a product —" : "Loading products…"}</option>
+              {products.map((p) => (
+                <option key={p.id} value={p.id}>
+                  {p.label}
+                </option>
+              ))}
+            </select>
+          </FormField>
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Bottle Size (ml)" required>
+              <input type="number" step="0.01" min="0.01" value={formTotalMl} onChange={(e) => setFormTotalMl(e.target.value)} placeholder="e.g. 100" className={inputClass} />
+            </FormField>
+            <FormField label="ml Remaining" required>
+              <input type="number" step="0.001" min="0" value={formNewRemainingMl} onChange={(e) => setFormNewRemainingMl(e.target.value)} placeholder="e.g. 85" className={inputClass} />
+            </FormField>
+          </div>
+          <FormField label="Bottle Cost (৳ BDT)" required>
+            <input type="number" step="0.01" min="0" value={formCostPerUnit} onChange={(e) => setFormCostPerUnit(e.target.value)} placeholder="Full purchase price of the bottle" className={inputClass} />
+          </FormField>
+          <FormField label="Batch Reference">
+            <input type="text" value={formBatchRef} onChange={(e) => setFormBatchRef(e.target.value)} className={inputClass} />
+          </FormField>
+          <FormField label="Notes">
+            <input type="text" value={formNotes} onChange={(e) => setFormNotes(e.target.value)} className={inputClass} />
+          </FormField>
+          <div className="flex items-center gap-3 pt-2">
+            <Button variant="primary" onClick={handleAddSource} isLoading={isPending}>
+              Add Open Bottle
+            </Button>
+            <Button variant="secondary" onClick={closeModal} disabled={isPending}>
+              Cancel
+            </Button>
+          </div>
+        </div>
+      </ModalOverlay>
+
       {/* ─── Edit Sealed Quantity Modal ───────────────────────── */}
       <ModalOverlay
         open={modal?.type === "editSealedQty"}
         onClose={closeModal}
-        title="Update Sealed Bottle Quantity"
+        error={modalError}
+        title="Edit Sealed Bottle Stock"
         description={
           modal?.type === "editSealedQty"
             ? `${modal.bottle.brandName} — ${modal.bottle.productName} (${formatVolume(modal.bottle.volumeMl)})`
@@ -774,13 +877,33 @@ export function InventoryClient({
         }
       >
         <div className="space-y-4">
-          <FormField label="New Quantity" required>
+          <div className="grid grid-cols-2 gap-4">
+            <FormField label="Units in Stock" required>
+              <input
+                type="number"
+                min="0"
+                step="1"
+                value={formNewQuantity}
+                onChange={(e) => setFormNewQuantity(e.target.value)}
+                className={inputClass}
+              />
+            </FormField>
+            <FormField label="Cost Per Unit (৳)">
+              <input
+                type="number"
+                min="0"
+                step="0.01"
+                value={formCostPerUnit}
+                onChange={(e) => setFormCostPerUnit(e.target.value)}
+                className={inputClass}
+              />
+            </FormField>
+          </div>
+          <FormField label="Batch Reference">
             <input
-              type="number"
-              min="0"
-              step="1"
-              value={formNewQuantity}
-              onChange={(e) => setFormNewQuantity(e.target.value)}
+              type="text"
+              value={formBatchRef}
+              onChange={(e) => setFormBatchRef(e.target.value)}
               className={inputClass}
             />
           </FormField>
@@ -795,7 +918,7 @@ export function InventoryClient({
           </FormField>
           <div className="flex items-center gap-3 pt-2">
             <Button variant="primary" onClick={handleUpdateSealedQty} isLoading={isPending}>
-              Update Quantity
+              Save Changes
             </Button>
             <Button variant="secondary" onClick={closeModal} disabled={isPending}>
               Cancel
@@ -808,6 +931,7 @@ export function InventoryClient({
       <ModalOverlay
         open={modal?.type === "deleteSealed"}
         onClose={closeModal}
+        error={modalError}
         title="Delete Sealed Bottle Record"
         description={
           modal?.type === "deleteSealed"
@@ -848,6 +972,7 @@ export function InventoryClient({
       <ModalOverlay
         open={modal?.type === "convertSealed"}
         onClose={closeModal}
+        error={modalError}
         title="Convert Sealed → Decant Source Bottle"
         description={
           modal?.type === "convertSealed"
@@ -885,6 +1010,7 @@ export function InventoryClient({
       <ModalOverlay
         open={modal?.type === "adjustSource"}
         onClose={closeModal}
+        error={modalError}
         title="Adjust Source Bottle Remaining ml"
         description={
           modal?.type === "adjustSource"
@@ -927,6 +1053,7 @@ export function InventoryClient({
       <ModalOverlay
         open={modal?.type === "retireSource"}
         onClose={closeModal}
+        error={modalError}
         title="Retire Source Bottle"
         description={
           modal?.type === "retireSource"

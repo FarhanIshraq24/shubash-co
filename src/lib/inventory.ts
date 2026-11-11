@@ -1,5 +1,5 @@
 import { prisma } from "@/lib/prisma";
-import { StockMovementType, SourceBottleStatus, ReservationStatus } from "@prisma/client";
+import { StockMovementType, SourceBottleStatus, ReservationStatus, Prisma } from "@prisma/client";
 import Decimal from "decimal.js";
 
 export interface ConvertBottleParams {
@@ -113,11 +113,17 @@ export async function reserveLiquidForOrderItem(params: {
   volumeMl: Decimal | number;
   orderItemId: string;
   expiresInMinutes?: number;
-}) {
+  productName?: string;
+}, existingTx?: Prisma.TransactionClient) {
   const { productId, variantId, volumeMl, orderItemId, expiresInMinutes = 60 } = params;
   const requestedMl = new Decimal(volumeMl.toString());
 
-  return await prisma.$transaction(async (tx) => {
+  // Must run inside the caller's transaction when given one: the order item
+  // it references is not committed yet, so a separate transaction can't see it.
+  const run = <T,>(fn: (tx: Prisma.TransactionClient) => Promise<T>) =>
+    existingTx ? fn(existingTx) : prisma.$transaction(fn);
+
+  return await run(async (tx) => {
     // Find active source bottles for this product with sufficient available liquid
     const sourceBottles = await tx.sourceBottle.findMany({
       where: {
@@ -142,7 +148,7 @@ export async function reserveLiquidForOrderItem(params: {
 
     if (!chosenBottle) {
       throw new Error(
-        `Insufficient liquid stock for ${requestedMl}ml decant of product ${productId}`
+        `Sorry, there isn't enough ${params.productName ?? "perfume"} left to fill ${requestedMl}ml. Please reduce the quantity or choose a smaller size.`
       );
     }
 
